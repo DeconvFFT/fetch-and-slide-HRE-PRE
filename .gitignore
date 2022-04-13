@@ -132,4 +132,4 @@ dmypy.json
 ./models
 
 # experimental files
-initial_experiments.ipynb
+initial_experiment.ipynb
