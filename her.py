@@ -20,6 +20,19 @@ class HER(object):
         self.reward_func = reward_func
     
     def sample_transitions(self, buffer_batch, batchsize):
+        '''
+        Parameters:
+        ----------
+        buffer_batch: dict 
+            A dictionary containing memory buffer from standard experience replay
+        
+        batchsize: int
+            Size of batch to be processed
+
+        Returns:
+        -------
+        None
+        '''
         T = buffer_batch['actions'].shape[0]
         
         # create samples from 0 to T-1
@@ -35,16 +48,27 @@ class HER(object):
         future_trajectories = (trajectories+1+future_offset)[indices]
 
         # set the current reached state after trajectory as a new goal
-        future_goal = buffer_batch['g_'][future_trajectories]
+        future_goal = buffer_batch['ag'][future_trajectories]
         transitions['g'][indices] = future_goal
 
         # store new rewards from reward function based on the updated goals
-        transitions['r'][indices] = np.expand_dims(self.reward_func(transitions['s_'], transitions['g'], None), 1)
+        transitions['r'][indices] = np.expand_dims(self.reward_func(transitions['ag_'], transitions['g'], None), 1)
         transitions = {k: transitions[k].reshpe(batchsize, *transitions[k].shape[1:]) for k in transitions.keys()}
     
-    def set_hindsight(self, buffer):
+    def get_hindsight(self, buffer):
+        '''
+        Parameters:
+        ----------
+        buffer: dict 
+            A dictionary containing memory buffer from standard experience replay
+
+        Returns:
+        -------
+        her_buffer: dict
+            A dictionary containing experiences (s||g,a,s_||g_,r) from hindsight experience replay
+        '''
         traj_len = len(buffer['actions'])
-        new_goal = buffer['s_'][-1] ## S[T] is the new goal from trajectory 0...T
+        new_goal = buffer['ag_'][-1] ## S[T] is the new goal from trajectory 0...T
 
         her_buffer = buffer.copy()
         # need to collect rewards and goals
