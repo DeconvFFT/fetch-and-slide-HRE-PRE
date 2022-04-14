@@ -11,7 +11,7 @@ import torch.nn.functional as F
 # add square of preactivations to actor's cost function
 # input dims of size -> number of states + goal 
 class Actor(nn.Module):
-    def __init__(self, lr, input_dims, fc1_dims, fc2_dims, nA,name,chkpt_dir='models'):
+    def __init__(self, lr, input_dims, fc1_dims, fc2_dims,fc3_dims, nA,name,chkpt_dir='models'):
         '''
         Parameters:
         ----------
@@ -28,6 +28,9 @@ class Actor(nn.Module):
         fc2_dims: int
             Number of hidden units for fc2 layer * number of actions in action space
         
+        fc3_dims: int
+            Number of hidden units for fc3 layer * number of actions in action space
+
         nA: int
             Number of actions in action space
         
@@ -46,6 +49,7 @@ class Actor(nn.Module):
         self.input_dims = input_dims
         self.fc1_dims = fc1_dims
         self.fc2_dims = fc2_dims
+        self.fc3_dims = fc3_dims
         self.lr = lr
         self.nA = nA
         self.chkpt_file = os.join(chkpt_dir,name)
@@ -53,11 +57,14 @@ class Actor(nn.Module):
         # define network architecture
         self.fc1 = nn.Linear(self.input_dims, self.fc1_dims) #hidden layer 1
         self.fc2 = nn.Linear(self.fc1_dims, self.fc2_dims) # hidden layer 2
-        self.mu = nn.Linear(self.fc2_dims, self.nA) # hidden layer 3 -> noisy version of original policy
+        self.fc3 = nn.Linear(self.fc2_dims, self.fc3_dims) # hidden layer 3
+
+        self.mu = nn.Linear(self.fc2_dims, self.nA) # output layer-> noisy version of original policy
 
         # add layer normalisation (batch norm here) as per ddpg documentation from openAI: https://spinningup.openai.com/en/latest/algorithms/ddpg.html 
         self.bn1 = nn.BatchNorm1d(self.fc1_dims)
         self.bn2 = nn.BatchNorm1d(self.fc2_dims)
+        self.bn3 = nn.BatchNorm1d(self.fc3_dims)
 
         # initialise network weights and biases
         fan1 = 1/np.sqrt(self.fc1.weight.data.size()[0])
@@ -68,9 +75,14 @@ class Actor(nn.Module):
         torch.nn.init.uniform_(self.fc2.weight.data, -fan2, fan2)
         torch.nn.init.uniform_(self.fc2.bias.data, -fan2, fan2)
 
-        fan3 = 0.003 # fixed value as per DDPG paper: https://arxiv.org/pdf/1509.02971.pdf
-        torch.nn.init.uniform_(self.mu.weight.data, -fan3, fan3)
-        torch.nn.init.uniform_(self.mu.bias.data, -fan3, fan3)
+        fan3 = 1/np.sqrt(self.fc3.weight.data.size()[0])
+        torch.nn.init.uniform_(self.fc3.weight.data, -fan3, fan3)
+        torch.nn.init.uniform_(self.fc3.bias.data, -fan3, fan3)
+
+
+        fan4 = 0.003 # fixed value as per DDPG paper: https://arxiv.org/pdf/1509.02971.pdf
+        torch.nn.init.uniform_(self.mu.weight.data, -fan4, fan4)
+        torch.nn.init.uniform_(self.mu.bias.data, -fan4, fan4)
 
         # define optimiser
         self.optimiser = torch.optim.Adam(self.parameters(), lr = self.lr)
@@ -96,6 +108,9 @@ class Actor(nn.Module):
         output = F.relu(output)
         output = self.fc2(output)
         output = self.bn2(output)
+        output = F.relu(output)
+        output = self.fc3(output)
+        output = self.bn3(output)
         output = F.relu(output)
         output = torch.tanh(self.mu(output))
         return output

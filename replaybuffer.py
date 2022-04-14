@@ -14,23 +14,24 @@ class ReplayBuffer(object):
         self.goal_memory = np.zeros((self.size, nG))
         self.terminal_memory = np.zeros(self.size, dtype=np.float32)
     
-    def store_transitions(self, state, action, reward, state_, done):
-        index = self.mem_counter % self.mem_size
+    def store_transitions(self, state, action, reward, state_, goal, done):
+        index = self.counter % self.size # added a wrap around condition incase the buffer runs out of space
         self.state_memory[index] = state
         self.new_state_memory[index] = state_
         self.reward_memory[index] = reward
         self.action_memory[index] = action
         self.terminal_memory[index] = 1-int(done)
-        self.mem_counter+=1
+        self.goal_memory[index] = goal
+        self.counter+=1
 
     def sample_buffer(self, batch_size):
-        max_memory = min(self.mem_counter, self.mem_size)
+        max_memory = min(self.counter, self.size)
         batch = np.random.choice(max_memory, batch_size)
 
-        states = self.state_memory[batch]
-        new_states = self.new_state_memory[batch]
-        actions = self.action_memory[batch]
-        rewards = self.reward_memory[batch]
+        state = self.state_memory[batch]
+        new_state = self.new_state_memory[batch]
+        action = self.action_memory[batch]
+        reward = self.reward_memory[batch]
         terminal = self.terminal_memory[batch]
-
-        return states, actions, rewards, new_states, terminal
+        goal = self.goal_memory[batch]
+        return state, action, reward, new_state, goal, terminal
