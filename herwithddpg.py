@@ -9,12 +9,13 @@ from actor_critic import Actor, Critic
 from ounoise import OUNoise
 from normaliser import normalizer
 from her import HER
+from mpiutils import *
 
 class HERDDPG(object):
-    def __init__(self, lr_actor, lr_critic, tau, env, envname, gamma, buffer_size,fc1_dims, fc2_dims, fc3_dims,cliprange, future, batch_size=64):
+    def __init__(self, lr_actor, lr_critic, tau, env, envname, gamma, buffer_size,fc1_dims, fc2_dims, fc3_dims,cliprange, future, batch_size=128):
         self.gamma = gamma
         self.tau = tau
-        self.replay_memory = ReplayBuffer(max_size=buffer_size, nS = env.nS, nA = env.nA, nG = env.nG)
+        #ReplayBuffer(max_size=buffer_size, nS = env.nS, nA = env.nA, nG = env.nG)
         self.lr_actor = lr_actor
         self.lr_critic = lr_critic
         self.fc1_dims = fc1_dims
@@ -36,6 +37,9 @@ class HERDDPG(object):
         # critic network
         self.critic = Critic(self.lr_critic, self.critic_input_dims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'critic')
 
+        sync_networks(self.actor)
+        sync_networks(self.critic)
+
         # define taget networks
         # actor network
         self.target_actor = Actor(self.lr_actor, self.actor_inputdims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'target_actor')
@@ -54,8 +58,9 @@ class HERDDPG(object):
         self.testenv = gym.make(envname)
 
         self.her = HER(future, self.env.compute_reward)
+        self.replay_memory = ReplayBuffer(max_size=buffer_size,nS = env.nS, nA=env.nA, nG=env.nG, timestamps =env.maxtimestamps, sampler = self.her.sample_transitions)
 
-         # move the model on to a device
+        # move the model on to a device
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         
         self.update_network_params(tau=1)
@@ -148,19 +153,20 @@ class HERDDPG(object):
         '''
 
         s, ag, g, actions = transitions
-        s_ = s[1:,:] # next observations
-        ag_ = ag[1:, :] # next goals
-
+        s_ = s[:,1:,:] # next observations
+        ag_ = ag[:,1:, :] # next goals
+        n_transitions = actions.shape[1] # length is equal to T
+                    
         # HER buffer
         buffer_her = {
-            'state': s,
+            'observation': s,
             'achieved_goal':ag,
             'goal':g,
             'actions':actions,
             'next_state':s_,
             'achieved_goal_next':ag_
         }
-        buffer_experience = self.her.get_hindsight(buffer = buffer_her)
+        buffer_experience = self.her.sample_transitions(buffer_batch=buffer_her,batchsize=n_transitions)
         return buffer_experience
 
 
@@ -180,12 +186,12 @@ class HERDDPG(object):
         None
         '''
         self.hindsight_buffer = self.generate_hindsight_buffer(transitions)
-        state, goal,  = self.hindsight_buffer['state'], self.hindsight_buffer['goal']
+        state, goal,  = self.hindsight_buffer['observation'], self.hindsight_buffer['goal']
         state, goal = self.preprocess_inputs(state, self.cliprange),  self.preprocess_inputs(goal, self.cliprange) # clip values of state and goal
-        self.hindsight_buffer['state'], self.hindsight_buffer['goal'] =  state, goal # update state, goal in buffer to reflect clipped values
+        self.hindsight_buffer['observation'], self.hindsight_buffer['goal'] =  state, goal # update state, goal in buffer to reflect clipped values
         
         # update normaliser and recompute stats
-        self.obs_norm.update_params(self.hindsight_buffer['state'])
+        self.obs_norm.update_params(self.hindsight_buffer['observation'])
         self.goal_norm.update_params(self.hindsight_buffer['goal'])
         self.obs_norm.recompute_stats()
         self.goal_norm.recompute_stats()
@@ -258,11 +264,11 @@ class HERDDPG(object):
         self.target_critic.load_state_dict(critic_state_dict)
 
 
-    def remember(self, state, next_state,action, reward, goal, done):
+    def remember(self, transitions):
         '''
         Stores transitions into replay memory
         '''
-        self.replay_memory.store_transitions(state,action, reward,next_state, goal, done)
+        self.replay_memory.store_transitions(transitions)
     
 
     def learn(self):
@@ -281,15 +287,15 @@ class HERDDPG(object):
         transitions = self.replay_memory.sample_buffer(self.batch_size)
 
         # get observation, next observation, goal and next goal
-        state, goal, next_state = transitions['state'], transitions['goal'], transitions['next_state']
-        transitions['state'], transitions['goal'] = self.preprocess_inputs(state), self.preprocess_inputs(goal) # preprocess state, goal
-        transitions['next_state'], transitions['next_goal'] = self.preprocess_inputs(next_state), self.preprocess_inputs(goal)
+        state, goal, next_state = transitions['observation'], transitions['goal'], transitions['observation_next']
+        transitions['observation'], transitions['goal'] = self.preprocess_inputs(state), self.preprocess_inputs(goal) # preprocess state, goal
+        transitions['observation_next'], transitions['goal_next'] = self.preprocess_inputs(next_state), self.preprocess_inputs(goal)
         
         # normalise state and goal
-        state_norm = self.obs_norm.normalize(transitions['state'])
+        state_norm = self.obs_norm.normalize(transitions['observation'])
         goal_norm = self.goal_norm.normalize(transitions['goal'])
-        next_state_norm =  self.obs_norm.normalize(transitions['next_state'])
-        next_goal_norm = self.goal_norm.normalize(transitions['next_goal'])
+        next_state_norm =  self.obs_norm.normalize(transitions['observation_next'])
+        next_goal_norm = self.goal_norm.normalize(transitions['goal_next'])
 
         # combine state and action as per "st||g and  st+1||g; || = concatenaton" and convert to tensors
         obs_goal= self.concat_inputs(state_norm, goal_norm)
@@ -308,27 +314,29 @@ class HERDDPG(object):
         self.target_actor.eval()
         self.target_critic.eval()
         self.critic.eval()
-
+        
         target_actions = self.target_actor.forward(obsnext_goal)
         target_q = self.target_critic.forward(obsnext_goal, target_actions)
-        actual_q = self.critic.forward(obsnext_goal, actions_tensor)
-
-        # get terminal flag
-        terminals = torch.tensor(transitions['terminals'])
-
-        #target_q = rewards_tensor + self.gamma *target_q* terminals
-        target = []
-        for j in range(self.batch_size):
-            target.append(rewards_tensor[j] + self.gamma*target_q[j]*(1-int(terminals[j])))
-        target = torch.tensor(target).to(self.critic.device)
-
-        target_q = target.view(self.batch_size, 1)
-
+        target_q = rewards_tensor + self.gamma * target_q 
         # clipping targets as per experiments section of original paper: https://arxiv.org/pdf/1707.01495.pdf page 14
         # clipping value is between 1/(1-gamma) and 0
         target_clip_val = 1 / (1-self.gamma)
         # torch.clip and torch.clamp are similar. 
         target_q = torch.clamp(target_q, target_clip_val, 0)
+        actual_q = self.critic.forward(obsnext_goal, actions_tensor)
+
+        # # get terminal flag
+        # terminals = torch.tensor(transitions['terminals'])
+
+        #target_q = rewards_tensor + self.gamma *target_q* terminals
+        # target = []
+        # for j in range(self.batch_size):
+        #     target.append(rewards_tensor[j] + self.gamma*target_q[j]*(1-int(terminals[j])))
+        # target = torch.tensor(target).to(self.critic.device)
+
+        #target_q = target.view(self.batch_size, 1)
+
+        
 
         # sending critic back to training
         self.critic.train()
@@ -338,6 +346,8 @@ class HERDDPG(object):
         critic_mse_loss = F.mse_loss(target_q, actual_q)
         self.critic_loss = critic_mse_loss.item()
         critic_mse_loss.backward()
+        sync_grads(self.critic)
+
         self.critic.optimiser.step()
 
     
@@ -352,10 +362,11 @@ class HERDDPG(object):
         actor_loss = torch.mean(actor_loss) # actor loss is -(expected loss from critic)
         self.actor_loss = actor_loss.item()
         actor_loss.backward()
+        sync_grads(self.actor)
+
         self.actor.optimiser.step()
 
         # update network params
-        self.update_network_params() # update target model params using actual model params as in ddpg
 
     
     def save_models(self):

@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F 
-
+from mpi4py import MPI
 # define actor class as per HER paper: https://arxiv.org/pdf/1707.01495.pdf
 # 3 hidden layers, 64 hidden units in each layers
 # ReLu activation for hidden layers, tanh activation for actor output
@@ -117,11 +117,13 @@ class Actor(nn.Module):
     
     def save_model(self):
         print(f'Saving actor model at checkpoint')
-        torch.save(self.state_dict(), self.chkpt_file)
+        if MPI.COMM_WORLD.Get_rank() == 0:
+            torch.save(self.state_dict(), self.chkpt_file)
     
     def load_model(self):
         print(f'Loading actor model from checkpoint')
-        self.load_state_dict(torch.load(self.chkpt_file))
+        if MPI.COMM_WORLD.Get_rank() == 0:
+            self.load_state_dict(torch.load(self.chkpt_file))
 
 
 class Critic(nn.Module):
@@ -145,6 +147,7 @@ class Critic(nn.Module):
         # add layer normalisation (batch norm here) as per ddpg documentation from openAI: https://spinningup.openai.com/en/latest/algorithms/ddpg.html 
         self.bn1 = nn.LayerNorm(self.fc1_dims)
         self.bn2 = nn.LayerNorm(self.fc2_dims)
+        self.bn3 = nn.LayerNorm(self.fc3_dims)
 
         # initialise network weights and biases
         fan1 = 1/np.sqrt(self.fc1.weight.data.size()[0])
@@ -184,21 +187,27 @@ class Critic(nn.Module):
             Q value corresponding to (s,a,g) pair
         '''
         # create state, action value pair
-        # state = s || g ; || -> concatenation
         state_action_value = torch.cat([state, action], dim=1) 
         state_action_value = self.fc1(state_action_value)
         state_action_value = self.bn1(state_action_value)
         state_action_value = F.relu(state_action_value)
         state_action_value = self.fc2(state_action_value)
         state_action_value = self.bn2(state_action_value)
+        state_action_value = F.relu(state_action_value)
+        state_action_value = self.fc3(state_action_value)
+        state_action_value = self.bn3(state_action_value)
+        state_action_value = F.relu(state_action_value)
+
         #action_value = F.relu(self.action_value(action))
         q_value = self.Q(state_action_value)
         return q_value
     
     def save_model(self):
         print(f'Saving actor model at checkpoint')
-        torch.save(self.state_dict(), self.chkpt_file)
+        if MPI.COMM_WORLD.Get_rank() == 0:
+            torch.save(self.state_dict(), self.chkpt_file)
     
     def load_model(self):
         print(f'Loading actor model from checkpoint')
-        self.load_state_dict(torch.load(self.chkpt_file))
+        if MPI.COMM_WORLD.Get_rank() == 0:
+            self.load_state_dict(torch.load(self.chkpt_file))

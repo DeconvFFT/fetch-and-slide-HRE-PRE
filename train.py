@@ -11,67 +11,83 @@ from mpi4py import MPI
 def train_agent(args, env, agent=HERDDPG):
     for epoch in range(args.episodes):
         
-        for _ in range(args.cycles):
+        for cycle in range(args.cycles):
             # reset state, goal data 
-            ep_obs, ep_achieved_goal, ep_goal, ep_actions = [],[],[],[]
-            episode_reward = 0
-            observation = env.reset()
+            cycle_obs, cycle_achieved_goal, cycle_goal, cycle_actions = [],[],[],[]
+            for _ in range(args.rollouts):
+                ep_obs, ep_achieved_goal, ep_goal, ep_actions = [],[],[],[]
+                episode_reward = 0
+                observation = env.reset()
 
-            obs = observation['observation']
-            achieved_goal = observation['achieved_goal']
-            goal = observation['desired_goal']
-            # collect samples for 'args.policy_episodes' episodes
-            for ep in range(args.policy_episodes):
-                # collect samples
-                #agent = HERDDPG() ##TODO: comment before running..
+                obs = observation['observation']
+                achieved_goal = observation['achieved_goal']
+                goal = observation['desired_goal']
+                # collect samples for 'args.policy_episodes' episodes
+                for ep in range(env.maxtimestamps):
+                    # collect samples
+                    #agent = HERDDPG() ##TODO: comment before running..
 
-                input_tensor = agent.concat_inputs(obs, goal)
-                # print(f'input_tensor: {input_tensor}')
-                action = agent.choose_action_wnoise(input_tensor, 1)
-                # print(f'action: {action}')
-                # collect statistics about next observation, achieved goals and desired goals..
-                next_observation, reward, done, _ = env.step(action)
-                obs_next = next_observation['observation']
-                achieved_goal_next = next_observation['achieved_goal']
-                # store in replay buffer
-                agent.remember(obs, obs_next, action, reward, goal, done)
+                    input_tensor = agent.concat_inputs(obs, goal)
+                    # print(f'input_tensor: {input_tensor}')
+                    action = agent.choose_action_wnoise(input_tensor, 1)
+                    # print(f'action: {action}')
+                    # collect statistics about next observation, achieved goals and desired goals..
+                    next_observation, reward, done, _ = env.step(action)
+                    obs_next = next_observation['observation']
+                    achieved_goal_next = next_observation['achieved_goal']
+
+                    ep_obs.append(obs.copy())
+                    ep_achieved_goal.append(achieved_goal.copy())
+                    ep_goal.append(goal.copy())
+                    ep_actions.append(action.copy())
+
+                    obs = obs_next
+                    achieved_goal = achieved_goal_next
+                
                 ep_obs.append(obs.copy())
                 ep_achieved_goal.append(achieved_goal.copy())
-                ep_goal.append(goal.copy())
-                ep_actions.append(action.copy())
-                obs = obs_next
-                achieved_goal = achieved_goal_next
-
-            ep_obs.append(obs.copy())
-            ep_achieved_goal.append(achieved_goal.copy())
-
+                cycle_obs.append(ep_obs)
+                cycle_achieved_goal.append(ep_achieved_goal)
+                cycle_actions.append(ep_actions)
+                cycle_goal.append(ep_goal)
+                print(f'cycle: {cycle}')
             # convert episode data into array for easier computation
-            ep_obs = np.array(ep_obs)
-            ep_achieved_goal = np.array(ep_achieved_goal)
-            ep_goal = np.array(ep_goal)
-            ep_actions = np.array(ep_actions)
+            cycle_obs = np.array(cycle_obs)
+            cycle_achieved_goal = np.array(cycle_achieved_goal)
+            cycle_goal = np.array(cycle_goal)
+            cycle_actions = np.array(cycle_actions)
             episode_reward += agent.rewards.mean()
-            
+            # store in replay buffer
+            print(f'for cycle: {cycle}')
+            print(f'cycle_obs: {cycle_obs.shape}')
+            print(f'cycle_achieved_goal: {cycle_achieved_goal.shape}')
+            print(f'cycle_goal: {cycle_goal.shape}')
+            print(f'cycle_actions:{cycle_actions.shape} ')
+            agent.remember([cycle_obs, cycle_achieved_goal, cycle_goal, cycle_actions])
+            print(f'agent remembered the transition')
             # apply HER
             
             # # store new goals from her buffer into replay buffer
             # for i in range(len_transitions):
-            agent.normalise_her_samples([ep_obs, ep_achieved_goal,ep_goal, ep_actions])
-
-            n = len(agent.hindsight_buffer['reward'])
-            for i in range(n):
-                    temp_done = 1 if (i == n-1) else 0
-                    agent.remember(agent.hindsight_buffer['state'][i],
-                                       agent.hindsight_buffer['next_state'][i],
-                                       agent.hindsight_buffer['actions'][i],
-                                       agent.hindsight_buffer['reward'][i],
-                                       agent.hindsight_buffer['goal'][i],
-                                       temp_done
-                                       )
+            agent.normalise_her_samples([cycle_obs, cycle_achieved_goal,cycle_goal, cycle_actions])
+            print(f'normalised the samples')
+            # n = len(agent.hindsight_buffer['reward'])
+            # for i in range(n):
+            #         temp_done = 1 if (i == n-1) else 0
+            #         agent.remember(agent.hindsight_buffer['state'][i],
+            #                            agent.hindsight_buffer['next_state'][i],
+            #                            agent.hindsight_buffer['actions'][i],
+            #                            agent.hindsight_buffer['reward'][i],
+            #                            agent.hindsight_buffer['goal'][i],
+            #                            temp_done
+            #                            )
+            print(f'starting model optimisation..')
             for _ in range(args.optimsteps):
                 # perform ddpg optimization...
                 agent.learn()
-        
+            print(f'model optimised..')
+            agent.update_network_params()      
+
         # print losses
         print("Critic loss : ",agent.critic_loss )
         print("Actor loss : " , agent.actor_loss)
@@ -81,6 +97,7 @@ def train_agent(args, env, agent=HERDDPG):
         print("[*] End of epoch ",epoch)
 
         if epoch%5==0:
+            print(f'eval agent started for epoch... {epoch}')
             success_rate = _eval_agent(args, agent)
             print(f'success rate: {success_rate}')
         if epoch%20==0:

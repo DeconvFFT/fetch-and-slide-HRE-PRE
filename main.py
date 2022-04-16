@@ -9,6 +9,7 @@ def create_environment(envname):
     env.nA = env.action_space.shape[0]
     env.nG = env.observation_space['achieved_goal'].shape[0]
     env.nS = env.observation_space['observation'].shape[0]
+    env.maxtimestamps = env._max_episode_steps
     return env
 if __name__ =='__main__':
     parser = argparse.ArgumentParser()
@@ -32,17 +33,21 @@ if __name__ =='__main__':
     parser.add_argument('--fc2_dims', type=str, default=256, help='Dimensions for fc2')
     parser.add_argument('--fc3_dims', type=str, default=256, help='Dimensions for fc3')
     parser.add_argument('--envname', type=str, default='FetchSlide-v1', help='Name of the environment')
+    parser.add_argument('--rollouts', type=int, default=1, help='Number of rollouts')
 
 
 
     args = parser.parse_args()
     envname = args.envname
     print(f'creating env with name: {envname}')
-
     env = create_environment(envname)
-    print(f'env: {env.action_space}')
+    print(f'env.maxtimestamps: {env.maxtimestamps}')
     agent = HERDDPG(args.actor_lr, args.critic_lr, args.tau,env, envname, args.gamma, args.buffersize, args.fc1_dims, args.fc2_dims, args.fc3_dims, args.cliprange,args.future,args.batch_size)
-    
+    # take the configuration for the HER
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['IN_MPI'] = '1'
+
     if args.mode =='train':
         train_agent(args,env, agent)
     else:

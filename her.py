@@ -33,12 +33,13 @@ class HER(object):
         -------
         None
         '''
-        T = buffer_batch['actions'].shape[0]
-        
+        T = buffer_batch['actions'].shape[1]
+        buffer_size = buffer_batch['actions'].shape[0]
+        episode_idxs = np.random.randint(0, buffer_size, batchsize) #TODO: change this
         # create samples from 0 to T-1
-        trajectories = np.random.randint(T-1, size=batchsize)
+        trajectories = np.random.randint(T, size=batchsize)
         # create transitions from trajectories
-        transitions = {k:buffer_batch[k][trajectories].copy() for k in buffer_batch.keys()}
+        transitions = {k:buffer_batch[k][episode_idxs,trajectories].copy() for k in buffer_batch.keys()}
         # get indices for hindsight experience buffer
         random_batch = np.random.uniform(size=batchsize)
         indices = np.where(random_batch<self.future_prob)
@@ -46,15 +47,16 @@ class HER(object):
         future_offset = future_offset.astype(int)
 
         future_trajectories = (trajectories+1+future_offset)[indices]
-
         # set the current reached state after trajectory as a new goal
-        future_goal = buffer_batch['achieved_goal'][future_trajectories]
+        #print(f"buffer_batch['achieved_goal']: {buffer_batch['achieved_goal']}")
+        future_goal = buffer_batch['achieved_goal'][episode_idxs[indices],future_trajectories]
         transitions['goal'][indices] = future_goal
 
         # store new rewards from reward function based on the updated goals
-        transitions['reward'][indices] = np.expand_dims(self.reward_func(transitions['achieved_goal_next'], transitions['goal'], None), 1)
-        transitions = {k: transitions[k].reshpe(batchsize, *transitions[k].shape[1:]) for k in transitions.keys()}
-    
+        transitions['reward'] = np.expand_dims(self.reward_func(transitions['achieved_goal_next'], transitions['goal'], None), 1)
+        transitions = {k: transitions[k].reshape(batchsize, *transitions[k].shape[1:]) for k in transitions.keys()}
+        return transitions
+
     def get_hindsight(self, buffer):
         '''
         Parameters:
