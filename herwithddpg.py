@@ -11,7 +11,7 @@ from normaliser import normalizer
 from her import HER
 
 class HERDDPG(object):
-    def __init__(self, lr_actor, lr_critic, tau, env, envname, gamma, buffer_size,fc1_dims, fc2_dims, fc3_dims,cliprange,  batch_size=64):
+    def __init__(self, lr_actor, lr_critic, tau, env, envname, gamma, buffer_size,fc1_dims, fc2_dims, fc3_dims,cliprange, future, batch_size=64):
         self.gamma = gamma
         self.tau = tau
         self.replay_memory = ReplayBuffer(max_size=buffer_size, nS = env.nS, nA = env.nA, nG = env.nG)
@@ -25,18 +25,22 @@ class HERDDPG(object):
         self.critic_input_dims = env.nS+env.nG+env.nA
         self.cliprange = cliprange
         self.envname = envname
-
+        self.env = env
+        self.her_buffer = None
+        self.critic_loss = None
+        self.actor_loss = None
+        self.rewards = np.zeros(1)
         # define actor and critic networks
         # actor network
         self.actor = Actor(self.lr_actor, self.actor_inputdims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'actor')
         # critic network
-        self.critic = Critic(self.lr_actor, self.critic_input_dims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'critic')
+        self.critic = Critic(self.lr_critic, self.critic_input_dims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'critic')
 
         # define taget networks
         # actor network
-        self.target_actor = Actor(self.lr_actor, self.actor_inputdims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'actor')
+        self.target_actor = Actor(self.lr_actor, self.actor_inputdims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'target_actor')
         # critic network
-        self.target_critic = Critic(self.lr_actor, self.critic_input_dims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'critic')
+        self.target_critic = Critic(self.lr_critic, self.critic_input_dims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'target_critic')
         
         # adding OU noise to make the policy noisy and generate noisy actions
         self.ounoise = OUNoise(mu=np.zeros(env.nA))
@@ -48,11 +52,13 @@ class HERDDPG(object):
 
         # create a test environment to avoid breaking things in train environment
         self.testenv = gym.make(envname)
-        self.her = HER(self.env.calculate_reward)
+
+        self.her = HER(future, self.env.compute_reward)
 
          # move the model on to a device
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-        self.to(self.device)
+        
+        self.update_network_params(tau=1)
 
     def choose_action_wnoise(self, observation, clip_val = 1):
         '''
@@ -74,13 +80,24 @@ class HERDDPG(object):
            Noisy action clipped with clip_val
         '''
         self.actor.eval()
-        observation = torch.tensor(observation, dtype=torch.float).to(self.actor.device)
+        observation = observation.reshape(1,-1)
+        observation = observation.to(self.actor.device)
         mu = self.actor(observation).to(self.actor.device)
-        mu_prime = mu + torch.tensor(self.ounoise(), dtype=torch.float).to(self.actor.device)
 
+        mu_prime = mu + torch.tensor(self.ounoise(), dtype=torch.float).to(self.actor.device)
         self.actor.train()
-        mu_prime = np.clip(mu_prime, -clip_val, clip_val) # clipping to keep actions in a valid range after adding noise
-        return mu_prime.cpu().detach().numpy()
+        mu_prime1 =  torch.flatten(mu_prime).detach().cpu().numpy()
+        mu_prime1 = np.clip(mu_prime1, -clip_val, clip_val) # clipping to keep actions in a valid range after adding noise
+        return mu_prime1
+    
+    def choose_action(self,observation, clip_val):
+        self.actor.eval()
+        observation = observation.reshape(1,-1)
+        observation = observation.to(self.actor.device)
+        mu = self.actor(observation).to(self.actor.device)
+        self.actor.train()
+        mu1 =  torch.flatten(mu).detach().cpu().numpy()
+        return np.clip(mu1, -clip_val, clip_val)
     
     def concat_inputs(self, observation, goal):
         '''
@@ -104,13 +121,16 @@ class HERDDPG(object):
         obs_norm = self.obs_norm.normalize(observation)
         goal_norm = self.goal_norm.normalize(goal)
 
-        obs_goal_norm = np.concatenate([obs_norm, goal_norm],axis=1)
-        obs_goal_norm = torch.tensor(obs_goal_norm, dtype=torch.float32)
+        if observation.shape[0] == 25:
+            inputs = np.concatenate([obs_norm, goal_norm])
+        else:
+            inputs = np.concatenate([obs_norm, goal_norm], axis = 1)
+        inputs = torch.tensor(inputs, dtype=torch.float32)
 
-        obs_goal_norm.to(self.device)
-        return obs_goal_norm
+        inputs.to(self.device)
+        return inputs
     
-    def generate_hindsight(self, transitions):
+    def generate_hindsight_buffer(self, transitions):
         '''
         Generates hindsight buffer by sampling new goals from a set of goals
         and then setting new goals as the achieved goal for state, action pair
@@ -127,23 +147,237 @@ class HERDDPG(object):
            Buffer containing hindsight from experience replay
         '''
 
-        obs, ag, g, actions = transitions
-        obs_ = obs[1:,:] # next observations
+        s, ag, g, actions = transitions
+        s_ = s[1:,:] # next observations
         ag_ = ag[1:, :] # next goals
-        
+
         # HER buffer
         buffer_her = {
-            'obs': obs,
-            'obs_':obs_,
-            'g':g,
-            'ag':ag,
-            'ag_':ag_,
-            'actions':actions
+            'state': s,
+            'achieved_goal':ag,
+            'goal':g,
+            'actions':actions,
+            'next_state':s_,
+            'achieved_goal_next':ag_
         }
         buffer_experience = self.her.get_hindsight(buffer = buffer_her)
         return buffer_experience
 
-     
 
-       
+    def normalise_her_samples(self, transitions):
+        '''
+        Normalises observation and goals in hindsight buffer and recomputes
+        mean and standard deviation for observations and goals using normaliser
+
+        Parameters:
+        -----------
+        hindsight buffer: dict() 
+            Dictionary containing observations, next observations, actual goals, 
+            achieved goals, next achieved goals and a list of actions
         
+        Returns:
+        -------
+        None
+        '''
+        self.hindsight_buffer = self.generate_hindsight_buffer(transitions)
+        state, goal,  = self.hindsight_buffer['state'], self.hindsight_buffer['goal']
+        state, goal = self.preprocess_inputs(state, self.cliprange),  self.preprocess_inputs(goal, self.cliprange) # clip values of state and goal
+        self.hindsight_buffer['state'], self.hindsight_buffer['goal'] =  state, goal # update state, goal in buffer to reflect clipped values
+        
+        # update normaliser and recompute stats
+        self.obs_norm.update_params(self.hindsight_buffer['state'])
+        self.goal_norm.update_params(self.hindsight_buffer['goal'])
+        self.obs_norm.recompute_stats()
+        self.goal_norm.recompute_stats()
+
+    
+    def preprocess_inputs(self, observation,cliprange = np.inf):
+        '''
+        Clips an input in desired range given by cliprange
+
+        Parameters:
+        -----------
+        observation: np.float32
+            Any float value 
+        
+        Returns:
+        -------
+        clipped_input: float32
+            Input clipped in a range given by cliprange
+        '''
+        clipped_input = np.clip(observation, -cliprange,cliprange)
+        return clipped_input
+    
+    def update_network_params(self,tau=None):
+        # implemented from ddpg paper: https://arxiv.org/pdf/1509.02971.pdf
+        '''
+        Moves target network based on tau. 
+        Takes a weighted average of original models and target models to update the target models
+        With a weight tau, it takes value from actor/critic and with weight (1-tau),
+        it takes value from target actor/critic model
+
+        Parameters:
+        -----------
+        tau: np.float32
+            weight of actor/critic model for target actor/critic model 
+        
+        Returns:
+        -------
+        None
+        '''
+        if tau is None:
+            tau = self.tau
+        
+        # get actor and critic parameters
+        actor_params = self.actor.named_parameters()
+        critic_params = self.critic.named_parameters()
+
+        # get target actor and target critic parameters
+        target_actor_params = self.target_actor.named_parameters()
+        target_critic_params = self.target_critic.named_parameters()
+
+        # create new state dicts from named params 
+
+        ## actor and critic state dict
+        actor_state_dict = dict(actor_params)
+        critic_state_dict = dict(critic_params)
+
+        ## target actor and target critic state dict
+        target_actor_state_dict = dict(target_actor_params)
+        target_critic_state_dict = dict(target_critic_params)
+        
+        # do a weighted update of state dicts 
+        for name in actor_state_dict:
+            actor_state_dict[name] = tau * actor_state_dict[name].clone() + (1-tau) * target_actor_state_dict[name].clone()
+
+        for name in critic_state_dict:
+            critic_state_dict[name] = tau * critic_state_dict[name].clone() + (1-tau) * target_critic_state_dict[name].clone()
+        
+        # load the updated state dicts into target models
+        self.target_actor.load_state_dict(actor_state_dict)
+        self.target_critic.load_state_dict(critic_state_dict)
+
+
+    def remember(self, state, next_state,action, reward, goal, done):
+        '''
+        Stores transitions into replay memory
+        '''
+        self.replay_memory.store_transitions(state,action, reward,next_state, goal, done)
+    
+
+    def learn(self):
+        '''
+        Learns from stored transitions inside 
+
+        Parameters:
+        -----------
+        tau: np.float32
+            weight of actor/critic model for target actor/critic model 
+        
+        Returns:
+        -------
+        None
+        '''
+        transitions = self.replay_memory.sample_buffer(self.batch_size)
+
+        # get observation, next observation, goal and next goal
+        state, goal, next_state = transitions['state'], transitions['goal'], transitions['next_state']
+        transitions['state'], transitions['goal'] = self.preprocess_inputs(state), self.preprocess_inputs(goal) # preprocess state, goal
+        transitions['next_state'], transitions['next_goal'] = self.preprocess_inputs(next_state), self.preprocess_inputs(goal)
+        
+        # normalise state and goal
+        state_norm = self.obs_norm.normalize(transitions['state'])
+        goal_norm = self.goal_norm.normalize(transitions['goal'])
+        next_state_norm =  self.obs_norm.normalize(transitions['next_state'])
+        next_goal_norm = self.goal_norm.normalize(transitions['next_goal'])
+
+        # combine state and action as per "st||g and  st+1||g; || = concatenaton" and convert to tensors
+        obs_goal= self.concat_inputs(state_norm, goal_norm)
+        obsnext_goal = self.concat_inputs(next_state_norm, next_goal_norm)
+        # convert actions, reward into tensors
+        actions_tensor = torch.tensor(transitions['actions'], dtype=torch.float32)
+        rewards_tensor = torch.tensor(transitions['reward'], dtype=torch.float32)
+        self.rewards = rewards_tensor
+        # move tensors to device
+        obs_goal.to(self.device)
+        obsnext_goal.to(self.device)
+        actions_tensor.to(self.device)
+        rewards_tensor.to(self.device)
+
+        # sending target networks and critic network into eval mode
+        self.target_actor.eval()
+        self.target_critic.eval()
+        self.critic.eval()
+
+        target_actions = self.target_actor.forward(obsnext_goal)
+        target_q = self.target_critic.forward(obsnext_goal, target_actions)
+        actual_q = self.critic.forward(obsnext_goal, actions_tensor)
+
+        # get terminal flag
+        terminals = torch.tensor(transitions['terminals'])
+
+        #target_q = rewards_tensor + self.gamma *target_q* terminals
+        target = []
+        for j in range(self.batch_size):
+            target.append(rewards_tensor[j] + self.gamma*target_q[j]*(1-int(terminals[j])))
+        target = torch.tensor(target).to(self.critic.device)
+
+        target_q = target.view(self.batch_size, 1)
+
+        # clipping targets as per experiments section of original paper: https://arxiv.org/pdf/1707.01495.pdf page 14
+        # clipping value is between 1/(1-gamma) and 0
+        target_clip_val = 1 / (1-self.gamma)
+        # torch.clip and torch.clamp are similar. 
+        target_q = torch.clamp(target_q, target_clip_val, 0)
+
+        # sending critic back to training
+        self.critic.train()
+        self.critic.optimiser.zero_grad() 
+
+        # calculate mse loss
+        critic_mse_loss = F.mse_loss(target_q, actual_q)
+        self.critic_loss = critic_mse_loss.item()
+        critic_mse_loss.backward()
+        self.critic.optimiser.step()
+
+    
+        # calculating actor model loss
+        # setting critic back in eval as we need to calculate loss from the actor model  
+        # by taking action generated from a behavioural policy (target policy + OU noise)
+        self.critic.eval()
+        self.actor.optimiser.zero_grad()
+        mu_b = self.actor.forward(obs_goal)
+        self.actor.train()
+        actor_loss = -self.critic.forward(obs_goal, mu_b)
+        actor_loss = torch.mean(actor_loss) # actor loss is -(expected loss from critic)
+        self.actor_loss = actor_loss.item()
+        actor_loss.backward()
+        self.actor.optimiser.step()
+
+        # update network params
+        self.update_network_params() # update target model params using actual model params as in ddpg
+
+    
+    def save_models(self):
+        self.actor.save_model()
+        self.critic.save_model()
+        self.target_actor.save_model()
+        self.target_critic.save_model()
+    
+    def load_models(self):
+        self.actor.load_model()
+        self.critic.load_model()
+        self.target_actor.load_model()
+        self.target_critic.load_model()
+
+
+
+
+    
+
+
+
+
+
+
+

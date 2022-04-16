@@ -48,11 +48,11 @@ class HER(object):
         future_trajectories = (trajectories+1+future_offset)[indices]
 
         # set the current reached state after trajectory as a new goal
-        future_goal = buffer_batch['ag'][future_trajectories]
-        transitions['g'][indices] = future_goal
+        future_goal = buffer_batch['achieved_goal'][future_trajectories]
+        transitions['goal'][indices] = future_goal
 
         # store new rewards from reward function based on the updated goals
-        transitions['r'][indices] = np.expand_dims(self.reward_func(transitions['ag_'], transitions['g'], None), 1)
+        transitions['reward'][indices] = np.expand_dims(self.reward_func(transitions['achieved_goal_next'], transitions['goal'], None), 1)
         transitions = {k: transitions[k].reshpe(batchsize, *transitions[k].shape[1:]) for k in transitions.keys()}
     
     def get_hindsight(self, buffer):
@@ -68,17 +68,17 @@ class HER(object):
             A dictionary containing experiences (s||g,a,s_||g_,r) from hindsight experience replay
         '''
         traj_len = len(buffer['actions'])
-        new_goal = buffer['ag_'][-1] ## S[T] is the new goal from trajectory 0...T
+        new_goal = buffer['achieved_goal_next'][-1] ## S[T] is the new goal from trajectory 0...T
 
         her_buffer = buffer.copy()
         # need to collect rewards and goals
-        her_buffer['r'] = np.zeros(traj_len)
+        her_buffer['reward'] = np.zeros(traj_len)
         for i in range(traj_len):
-            her_buffer['g'][i] = new_goal ## S[T] is the new goal for each state in the trajectory
+            her_buffer['goal'][i] = new_goal ## S[T] is the new goal for each state in the trajectory
             if i == traj_len-1 : ## end of episodes
-                 her_buffer['r'][i] = 0
+                 her_buffer['reward'][i] = 0
             else:
-                her_buffer['r'][i] = -1
-            her_buffer['g_'] = her_buffer['g'][1:, :] # setting next goals
+                her_buffer['reward'][i] = -1
+            her_buffer['goal_next'] = her_buffer['goal'][1:, :] # setting next goals
         
         return her_buffer

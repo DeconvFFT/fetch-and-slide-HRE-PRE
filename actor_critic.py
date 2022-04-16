@@ -52,7 +52,7 @@ class Actor(nn.Module):
         self.fc3_dims = fc3_dims
         self.lr = lr
         self.nA = nA
-        self.chkpt_file = os.join(chkpt_dir,name)
+        self.chkpt_file = os.path.join(chkpt_dir,name)
 
         # define network architecture
         self.fc1 = nn.Linear(self.input_dims, self.fc1_dims) #hidden layer 1
@@ -62,9 +62,9 @@ class Actor(nn.Module):
         self.mu = nn.Linear(self.fc2_dims, self.nA) # output layer-> noisy version of original policy
 
         # add layer normalisation (batch norm here) as per ddpg documentation from openAI: https://spinningup.openai.com/en/latest/algorithms/ddpg.html 
-        self.bn1 = nn.BatchNorm1d(self.fc1_dims)
-        self.bn2 = nn.BatchNorm1d(self.fc2_dims)
-        self.bn3 = nn.BatchNorm1d(self.fc3_dims)
+        self.bn1 = nn.LayerNorm(self.fc1_dims)
+        self.bn2 = nn.LayerNorm(self.fc2_dims)
+        self.bn3 = nn.LayerNorm(self.fc3_dims)
 
         # initialise network weights and biases
         fan1 = 1/np.sqrt(self.fc1.weight.data.size()[0])
@@ -133,7 +133,7 @@ class Critic(nn.Module):
         self.fc3_dims = fc3_dims
         self.lr = lr
         self.nA = nA
-        self.chkpt_file = os.join(chkpt_dir,name)
+        self.chkpt_file = os.path.join(chkpt_dir,name)
 
         # define network architecture
         self.fc1 = nn.Linear(self.input_dims, self.fc1_dims) #hidden layer 1
@@ -143,8 +143,8 @@ class Critic(nn.Module):
         self.Q = nn.Linear(self.fc3_dims, 1)
 
         # add layer normalisation (batch norm here) as per ddpg documentation from openAI: https://spinningup.openai.com/en/latest/algorithms/ddpg.html 
-        self.bn1 = nn.BatchNorm1d(self.fc1_dims)
-        self.bn2 = nn.BatchNorm1d(self.fc2_dims)
+        self.bn1 = nn.LayerNorm(self.fc1_dims)
+        self.bn2 = nn.LayerNorm(self.fc2_dims)
 
         # initialise network weights and biases
         fan1 = 1/np.sqrt(self.fc1.weight.data.size()[0])

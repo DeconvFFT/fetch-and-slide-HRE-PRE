@@ -20,18 +20,30 @@ class ReplayBuffer(object):
         self.new_state_memory[index] = state_
         self.reward_memory[index] = reward
         self.action_memory[index] = action
-        self.terminal_memory[index] = 1-int(done)
+        self.terminal_memory[index] = done
         self.goal_memory[index] = goal
         self.counter+=1
 
     def sample_buffer(self, batch_size):
         max_memory = min(self.counter, self.size)
+        
         batch = np.random.choice(max_memory, batch_size)
 
         state = self.state_memory[batch]
         new_state = self.new_state_memory[batch]
-        action = self.action_memory[batch]
-        reward = self.reward_memory[batch]
-        terminal = self.terminal_memory[batch]
-        goal = self.goal_memory[batch]
-        return state, action, reward, new_state, goal, terminal
+        actions = self.action_memory[batch]
+        rewards = self.reward_memory[batch]
+        terminals = self.terminal_memory[batch]
+        goals = self.goal_memory[batch]
+        transitions = {
+            'state': state,
+            'next_state':new_state,
+            'actions': actions,
+            'reward': rewards,
+            'goal':goals,
+            'terminals': terminals,
+
+        }
+        return transitions
+
+    ##TODO: add function documentation for replay buffer class

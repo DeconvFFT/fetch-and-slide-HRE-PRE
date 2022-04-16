@@ -44,7 +44,7 @@ class normalizer(object):
 
         # collect mean and std 
         self.mean = np.zeros(self.size, dtype=np.float32)
-        self.std = np.zeros(self.size, dtype=np.float32)
+        self.std = np.ones(self.size, dtype=np.float32)
 
         # acquire thread lock
         self.lock = threading.Lock()
@@ -134,7 +134,7 @@ class normalizer(object):
         None
         '''
 
-        with self.lock(): # compute stats when we acquire the thread lock
+        with self.lock: # compute stats when we acquire the thread lock
             local_sum = self.local_sum.copy()
             local_sumsq = self.local_sumsq.copy()
             local_count = self.local_count.copy()
@@ -176,10 +176,11 @@ class normalizer(object):
             range specified by clip_val
         '''
         if clip_val is None:
-            clip_val = self.default_clip_range
-        obs_stdnorm = (obs - self.mean)/(self.std)
-        clipped_obs =  np.clip(obs_stdnorm, -clip_val, clip_val)
+            clip_val = self.default_clip_range # no clipping in this case
+        obs_stdnorm = (obs - self.mean)/(self.std) # convert observation to standard norm
+        clipped_obs =  np.clip(obs_stdnorm, -clip_val, clip_val) # clipping observation using clip_val
         return clipped_obs
 
 
+    
 
