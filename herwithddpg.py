@@ -12,7 +12,7 @@ from her import HER
 from mpiutils import *
 
 class HERDDPG(object):
-    def __init__(self, lr_actor, lr_critic, tau, env, envname, gamma, buffer_size,fc1_dims, fc2_dims, fc3_dims,cliprange, future, batch_size=128):
+    def __init__(self, lr_actor, lr_critic, tau, env, envname, gamma, buffer_size,fc1_dims, fc2_dims, fc3_dims,cliprange, clip_observation,future, batch_size=128):
         self.gamma = gamma
         self.tau = tau
         #ReplayBuffer(max_size=buffer_size, nS = env.nS, nA = env.nA, nG = env.nG)
@@ -25,6 +25,7 @@ class HERDDPG(object):
         self.actor_inputdims = env.nS+env.nG
         self.critic_input_dims = env.nS+env.nG+env.nA
         self.cliprange = cliprange
+        self.clip_observation = clip_observation
         self.envname = envname
         self.env = env
         self.her_buffer = None
@@ -132,18 +133,27 @@ class HERDDPG(object):
            tensor containing observed state and goal state concatenated
         '''
 
-        obs_norm = self.obs_norm.normalize(observation)
-        goal_norm = self.goal_norm.normalize(goal)
+        # obs_norm = self.obs_norm.normalize(observation)
+        # goal_norm = self.goal_norm.normalize(goal)
 
-        if observation.shape[0] == 25:
-            inputs = np.concatenate([obs_norm, goal_norm])
-        else:
-            inputs = np.concatenate([obs_norm, goal_norm], axis = 1)
+        # if observation.shape[0] == 25:
+        #     inputs = np.concatenate([observation, goal])
+        # else:
+        inputs = np.concatenate([observation, goal], axis = 1)
         inputs = torch.tensor(inputs, dtype=torch.float32)
 
         inputs.to(self.device)
         return inputs
-    
+     # pre_process the inputs
+    def _preproc_inputs(self, obs, g):
+        obs_norm = self.obs_norm.normalize(obs)
+        g_norm = self.goal_norm.normalize(g)
+        # concatenate the stuffs
+        inputs = np.concatenate([obs_norm, g_norm])
+        inputs = torch.tensor(inputs, dtype=torch.float32).unsqueeze(0)
+        inputs.to(self.device)
+        return inputs
+
     def generate_hindsight_buffer(self, transitions):
         '''
         Generates hindsight buffer by sampling new goals from a set of goals
@@ -196,7 +206,7 @@ class HERDDPG(object):
         '''
         self.hindsight_buffer = self.generate_hindsight_buffer(transitions)
         state, goal,  = self.hindsight_buffer['observation'], self.hindsight_buffer['goal']
-        state, goal = self.preprocess_inputs(state, self.cliprange),  self.preprocess_inputs(goal, self.cliprange) # clip values of state and goal
+        state, goal = self.preprocess_inputs(state, self.clip_observation),  self.preprocess_inputs(goal, self.clip_observation) # clip values of state and goal
         self.hindsight_buffer['observation'], self.hindsight_buffer['goal'] =  state, goal # update state, goal in buffer to reflect clipped values
         
         # update normaliser and recompute stats
@@ -297,8 +307,8 @@ class HERDDPG(object):
 
         # get observation, next observation, goal and next goal
         state, goal, next_state = transitions['observation'], transitions['goal'], transitions['observation_next']
-        transitions['observation'], transitions['goal'] = self.preprocess_inputs(state), self.preprocess_inputs(goal) # preprocess state, goal
-        transitions['observation_next'], transitions['goal_next'] = self.preprocess_inputs(next_state), self.preprocess_inputs(goal)
+        transitions['observation'], transitions['goal'] = self.preprocess_inputs(state, self.clip_observation), self.preprocess_inputs(goal,self.clip_observation) # preprocess state, goal
+        transitions['observation_next'], transitions['goal_next'] = self.preprocess_inputs(next_state,self.clip_observation), self.preprocess_inputs(goal,self.clip_observation)
         
         # normalise state and goal
         state_norm = self.obs_norm.normalize(transitions['observation'])
@@ -326,7 +336,9 @@ class HERDDPG(object):
         with torch.no_grad():
             target_actions = self.target_actor.forward(obsnext_goal)
             target_q = self.target_critic.forward(obsnext_goal, target_actions)
+            target_q = target_q.detach()
             target_q = rewards_tensor + self.gamma * target_q 
+            target_q = target_q.detach()
             # clipping targets as per experiments section of original paper: https://arxiv.org/pdf/1707.01495.pdf page 14
             # clipping value is between 1/(1-gamma) and 0
             target_clip_val = 1 / (1-self.gamma)

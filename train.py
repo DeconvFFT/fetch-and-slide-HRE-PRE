@@ -7,6 +7,7 @@ import gym
 from herwithddpg import HERDDPG
 import time
 from mpi4py import MPI
+import datetime
 
 def train_agent(args, env, agent=HERDDPG):
     success_rate = np.zeros(args.episodes)
@@ -28,7 +29,7 @@ def train_agent(args, env, agent=HERDDPG):
                     # collect samples
                     #agent = HERDDPG() ##TODO: comment before running..
                     with torch.no_grad():
-                        input_tensor = agent.concat_inputs(obs, goal)
+                        input_tensor = agent._preproc_inputs(obs, goal)
                         # print(f'input_tensor: {input_tensor}')
                         action = agent.actor(input_tensor)
                         action = agent.choose_action_wnoise(action,args.noise, 1)
@@ -52,8 +53,8 @@ def train_agent(args, env, agent=HERDDPG):
                 cycle_achieved_goal.append(ep_achieved_goal)
                 cycle_actions.append(ep_actions)
                 cycle_goal.append(ep_goal)
-                print(f'cycle: {cycle}')
-                print(f'actions: {ep_actions}')
+                #print(f'cycle: {cycle}')
+                #print(f'ep_actions: {ep_actions}')
             # convert episode data into array for easier computation
             cycle_obs = np.array(cycle_obs)
             cycle_achieved_goal = np.array(cycle_achieved_goal)
@@ -65,7 +66,7 @@ def train_agent(args, env, agent=HERDDPG):
             print(f'cycle_obs: {cycle_obs.shape}')
             print(f'cycle_achieved_goal: {cycle_achieved_goal.shape}')
             print(f'cycle_goal: {cycle_goal.shape}')
-            print(f'cycle_actions:{cycle_actions.shape} ')
+            # print(f'cycle_actions:{cycle_actions} ')
             agent.remember([cycle_obs, cycle_achieved_goal, cycle_goal, cycle_actions])
             print(f'agent remembered the transition')
             # apply HER
@@ -102,27 +103,30 @@ def train_agent(args, env, agent=HERDDPG):
         #if epoch%5==0:
         print(f'eval agent started for epoch... {epoch}')
         success_rate_epoch = _eval_agent(env,args, agent)
-        success_rate[epoch] = np.mean(success_rate_epoch)
-        print(f'success rate: {np.mean(success_rate_epoch)}')
+        if MPI.COMM_WORLD.Get_rank() == 0:
+            print(' epoch is: {}, eval success rate is: {:.3f}'.format(epoch, success_rate_epoch))
+            success_rate[epoch] = np.mean(success_rate_epoch)
+            print(f'success rate: {np.mean(success_rate_epoch)}')
+
         if epoch%20==0:
             agent.actor.save_model()
             agent.target_actor.save_model()
             agent.critic.save_model()
             agent.target_critic.save_model()
         
-        with open('successlog.log') as f:
-            f.write('success_rate[epoch]:'+success_rate[epoch])
+        # with open('successlog.log') as f:
+        #     f.write('success_rate[epoch]:'+str(success_rate[epoch]))
 # do the evaluation
 def _eval_agent(env, args, agent):
     total_success_rate = []
-    for _ in range(args.rollouts):
+    for _ in range(10):
         per_success_rate = []
         observation = env.reset()
         obs = observation['observation']
         g = observation['desired_goal']
         for _ in range(env.maxtimestamps):
             with torch.no_grad():
-                input_tensor = agent.concat_inputs(obs, g)
+                input_tensor = agent._preproc_inputs(obs, g)
                 action = agent.actor(input_tensor)
                 pi =agent.choose_action_wnoise(action,args.noise, 1)
                 # convert the actions
