@@ -3,7 +3,7 @@ import argparse
 from train import *
 from test import *
 from herwithddpg import HERDDPG
-
+import random
 def create_environment(envname):
     env = gym.make(envname)
     env.nA = env.action_space.shape[0]
@@ -15,11 +15,11 @@ if __name__ =='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--episodes', type=int, default=200, help='Number of epidoes')
     parser.add_argument('--cycles', type=int, default=50, help='Number of cycles/episode')
-    parser.add_argument('--policy_episodes', type=int, default=16, help='Number of episodes to run policy for in each cycle')
     parser.add_argument('--optimsteps', type=int, default=40, help='Number of optimisation steps in each cycle')
-    parser.add_argument('--maxsteps', type=int, default=1000, help='Maximum number of time stamps per episode')
     parser.add_argument('--buffersize', type=int, default=int(1e6), help='Size of replay buffer')
     parser.add_argument('--mode', type=str, default='train', help='Train or eval mode')
+    parser.add_argument('--seed', type=int, default=123, help='random seed')
+
     parser.add_argument('--eval_episodes', type=int, default=50, help='Number of evaluation epidoes')
     parser.add_argument('--future', type=int, default=4, help='How many future episodes to consider')
     parser.add_argument('--algorithm',type=str, default='ddpg', help='Algorithm to use for training the agent')
@@ -35,12 +35,17 @@ if __name__ =='__main__':
     parser.add_argument('--envname', type=str, default='FetchSlide-v1', help='Name of the environment')
     parser.add_argument('--rollouts', type=int, default=1, help='Number of rollouts')
 
+    parser.add_argument('--noise', type=float, default=0.2, help='Noise factor for OU noise')
 
 
     args = parser.parse_args()
     envname = args.envname
     print(f'creating env with name: {envname}')
     env = create_environment(envname)
+    env.seed(args.seed + MPI.COMM_WORLD.Get_rank())
+    random.seed(args.seed + MPI.COMM_WORLD.Get_rank())
+    np.random.seed(args.seed + MPI.COMM_WORLD.Get_rank())
+    torch.manual_seed(args.seed + MPI.COMM_WORLD.Get_rank())
     print(f'env.maxtimestamps: {env.maxtimestamps}')
     agent = HERDDPG(args.actor_lr, args.critic_lr, args.tau,env, envname, args.gamma, args.buffersize, args.fc1_dims, args.fc2_dims, args.fc3_dims, args.cliprange,args.future,args.batch_size)
     # take the configuration for the HER

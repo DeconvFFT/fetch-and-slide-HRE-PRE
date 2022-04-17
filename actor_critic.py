@@ -62,27 +62,27 @@ class Actor(nn.Module):
         self.mu = nn.Linear(self.fc2_dims, self.nA) # output layer-> noisy version of original policy
 
         # add layer normalisation (batch norm here) as per ddpg documentation from openAI: https://spinningup.openai.com/en/latest/algorithms/ddpg.html 
-        self.bn1 = nn.LayerNorm(self.fc1_dims)
-        self.bn2 = nn.LayerNorm(self.fc2_dims)
-        self.bn3 = nn.LayerNorm(self.fc3_dims)
+        # self.bn1 = nn.LayerNorm(self.fc1_dims)
+        # self.bn2 = nn.LayerNorm(self.fc2_dims)
+        # self.bn3 = nn.LayerNorm(self.fc3_dims)
 
-        # initialise network weights and biases
-        fan1 = 1/np.sqrt(self.fc1.weight.data.size()[0])
-        torch.nn.init.uniform_(self.fc1.weight.data, -fan1, fan1)
-        torch.nn.init.uniform_(self.fc1.bias.data, -fan1, fan1)
+        # # initialise network weights and biases
+        # fan1 = 1/np.sqrt(self.fc1.weight.data.size()[0])
+        # torch.nn.init.uniform_(self.fc1.weight.data, -fan1, fan1)
+        # torch.nn.init.uniform_(self.fc1.bias.data, -fan1, fan1)
 
-        fan2 = 1/np.sqrt(self.fc2.weight.data.size()[0])
-        torch.nn.init.uniform_(self.fc2.weight.data, -fan2, fan2)
-        torch.nn.init.uniform_(self.fc2.bias.data, -fan2, fan2)
+        # fan2 = 1/np.sqrt(self.fc2.weight.data.size()[0])
+        # torch.nn.init.uniform_(self.fc2.weight.data, -fan2, fan2)
+        # torch.nn.init.uniform_(self.fc2.bias.data, -fan2, fan2)
 
-        fan3 = 1/np.sqrt(self.fc3.weight.data.size()[0])
-        torch.nn.init.uniform_(self.fc3.weight.data, -fan3, fan3)
-        torch.nn.init.uniform_(self.fc3.bias.data, -fan3, fan3)
+        # fan3 = 1/np.sqrt(self.fc3.weight.data.size()[0])
+        # torch.nn.init.uniform_(self.fc3.weight.data, -fan3, fan3)
+        # torch.nn.init.uniform_(self.fc3.bias.data, -fan3, fan3)
 
 
-        fan4 = 0.003 # fixed value as per DDPG paper: https://arxiv.org/pdf/1509.02971.pdf
-        torch.nn.init.uniform_(self.mu.weight.data, -fan4, fan4)
-        torch.nn.init.uniform_(self.mu.bias.data, -fan4, fan4)
+        # fan4 = 0.003 # fixed value as per DDPG paper: https://arxiv.org/pdf/1509.02971.pdf
+        # torch.nn.init.uniform_(self.mu.weight.data, -fan4, fan4)
+        # torch.nn.init.uniform_(self.mu.bias.data, -fan4, fan4)
 
         # define optimiser
         self.optimiser = torch.optim.Adam(self.parameters(), lr = self.lr)
@@ -104,13 +104,13 @@ class Actor(nn.Module):
             Distance from the goal state
         '''
         output = self.fc1(state)
-        output = self.bn1(output)
+        #output = self.bn1(output)
         output = F.relu(output)
         output = self.fc2(output)
-        output = self.bn2(output)
+        #output = self.bn2(output)
         output = F.relu(output)
         output = self.fc3(output)
-        output = self.bn3(output)
+        #output = self.bn3(output)
         output = F.relu(output)
         output = torch.tanh(self.mu(output))
         return output
@@ -145,22 +145,22 @@ class Critic(nn.Module):
         self.Q = nn.Linear(self.fc3_dims, 1)
 
         # add layer normalisation (batch norm here) as per ddpg documentation from openAI: https://spinningup.openai.com/en/latest/algorithms/ddpg.html 
-        self.bn1 = nn.LayerNorm(self.fc1_dims)
-        self.bn2 = nn.LayerNorm(self.fc2_dims)
-        self.bn3 = nn.LayerNorm(self.fc3_dims)
+        # self.bn1 = nn.LayerNorm(self.fc1_dims)
+        # self.bn2 = nn.LayerNorm(self.fc2_dims)
+        # self.bn3 = nn.LayerNorm(self.fc3_dims)
 
-        # initialise network weights and biases
-        fan1 = 1/np.sqrt(self.fc1.weight.data.size()[0])
-        torch.nn.init.uniform_(self.fc1.weight.data, -fan1, fan1)
-        torch.nn.init.uniform_(self.fc1.bias.data, -fan1, fan1)
+        # # initialise network weights and biases
+        # fan1 = 1/np.sqrt(self.fc1.weight.data.size()[0])
+        # torch.nn.init.uniform_(self.fc1.weight.data, -fan1, fan1)
+        # torch.nn.init.uniform_(self.fc1.bias.data, -fan1, fan1)
 
-        fan2 = 1/np.sqrt(self.fc2.weight.data.size()[0])
-        torch.nn.init.uniform_(self.fc2.weight.data, -fan2, fan2)
-        torch.nn.init.uniform_(self.fc2.bias.data, -fan2, fan2)
+        # fan2 = 1/np.sqrt(self.fc2.weight.data.size()[0])
+        # torch.nn.init.uniform_(self.fc2.weight.data, -fan2, fan2)
+        # torch.nn.init.uniform_(self.fc2.bias.data, -fan2, fan2)
 
-        fan3 = 1/np.sqrt(self.fc3.weight.data.size()[0])
-        torch.nn.init.uniform_(self.fc3.weight.data, -fan3, fan3)
-        torch.nn.init.uniform_(self.fc3.bias.data, -fan3, fan3)
+        # fan3 = 1/np.sqrt(self.fc3.weight.data.size()[0])
+        # torch.nn.init.uniform_(self.fc3.weight.data, -fan3, fan3)
+        # torch.nn.init.uniform_(self.fc3.bias.data, -fan3, fan3)
         
 
         # define optimiser
@@ -189,13 +189,13 @@ class Critic(nn.Module):
         # create state, action value pair
         state_action_value = torch.cat([state, action], dim=1) 
         state_action_value = self.fc1(state_action_value)
-        state_action_value = self.bn1(state_action_value)
+        #state_action_value = self.bn1(state_action_value)
         state_action_value = F.relu(state_action_value)
         state_action_value = self.fc2(state_action_value)
-        state_action_value = self.bn2(state_action_value)
+        #state_action_value = self.bn2(state_action_value)
         state_action_value = F.relu(state_action_value)
         state_action_value = self.fc3(state_action_value)
-        state_action_value = self.bn3(state_action_value)
+        #state_action_value = self.bn3(state_action_value)
         state_action_value = F.relu(state_action_value)
 
         #action_value = F.relu(self.action_value(action))

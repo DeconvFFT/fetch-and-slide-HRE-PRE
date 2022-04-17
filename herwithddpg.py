@@ -47,7 +47,7 @@ class HERDDPG(object):
         self.target_critic = Critic(self.lr_critic, self.critic_input_dims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'target_critic')
         
         # adding OU noise to make the policy noisy and generate noisy actions
-        self.ounoise = OUNoise(mu=np.zeros(env.nA))
+        self.ounoise = OUNoise(env.nA,123)
 
         # normalise observation and goal
 
@@ -65,7 +65,7 @@ class HERDDPG(object):
         
         self.update_network_params(tau=1)
 
-    def choose_action_wnoise(self, observation, clip_val = 1):
+    def choose_action_wnoise(self, action, noise, clip_val = 1):
         '''
         Adds Noise to actions and clips the values of actions 
         in between a specific range defined by clip_val
@@ -84,16 +84,25 @@ class HERDDPG(object):
         mu_prime: int
            Noisy action clipped with clip_val
         '''
-        self.actor.eval()
-        observation = observation.reshape(1,-1)
-        observation = observation.to(self.actor.device)
-        mu = self.actor(observation).to(self.actor.device)
+        #self.actor.eval()
+        #observation = observation.reshape(1,-1)
+        #observation = observation.to(self.actor.device)
+        #with torch.no_grad():
+        mu = action.cpu().numpy().squeeze()
+       # mu = self.actor(observation)#.to(self.actor.device)
 
-        mu_prime = mu + torch.tensor(self.ounoise(), dtype=torch.float).to(self.actor.device)
-        self.actor.train()
-        mu_prime1 =  torch.flatten(mu_prime).detach().cpu().numpy()
-        mu_prime1 = np.clip(mu_prime1, -clip_val, clip_val) # clipping to keep actions in a valid range after adding noise
-        return mu_prime1
+        # mu_prime = mu + torch.tensor(self.ounoise(), dtype=torch.float).to(self.actor.device)
+        #self.actor.train()
+        # mu_prime1 =  torch.flatten(mu_prime).detach().cpu().numpy()
+        mu_prime = mu + noise*self.ounoise()
+        mu_prime = np.clip(mu_prime, -clip_val, clip_val) # clipping to keep actions in a valid range after adding noise
+
+         # random actions...
+        random_actions = np.random.uniform(low=-1, high=1,
+                                           size=self.env.nA)
+        # choose if use the random actions
+        mu_prime += np.random.binomial(1, 0.3, 1)[0] * (random_actions - mu_prime)
+        return mu_prime
     
     def choose_action(self,observation, clip_val):
         self.actor.eval()
@@ -311,19 +320,19 @@ class HERDDPG(object):
         rewards_tensor.to(self.device)
 
         # sending target networks and critic network into eval mode
-        self.target_actor.eval()
-        self.target_critic.eval()
-        self.critic.eval()
-        
-        target_actions = self.target_actor.forward(obsnext_goal)
-        target_q = self.target_critic.forward(obsnext_goal, target_actions)
-        target_q = rewards_tensor + self.gamma * target_q 
-        # clipping targets as per experiments section of original paper: https://arxiv.org/pdf/1707.01495.pdf page 14
-        # clipping value is between 1/(1-gamma) and 0
-        target_clip_val = 1 / (1-self.gamma)
-        # torch.clip and torch.clamp are similar. 
-        target_q = torch.clamp(target_q, target_clip_val, 0)
-        actual_q = self.critic.forward(obsnext_goal, actions_tensor)
+        # self.target_actor.eval()
+        # self.target_critic.eval()
+        # self.critic.eval()
+        with torch.no_grad():
+            target_actions = self.target_actor.forward(obsnext_goal)
+            target_q = self.target_critic.forward(obsnext_goal, target_actions)
+            target_q = rewards_tensor + self.gamma * target_q 
+            # clipping targets as per experiments section of original paper: https://arxiv.org/pdf/1707.01495.pdf page 14
+            # clipping value is between 1/(1-gamma) and 0
+            target_clip_val = 1 / (1-self.gamma)
+            # torch.clip and torch.clamp are similar. 
+            target_q = torch.clamp(target_q, target_clip_val, 0)
+            # actual_q = self.critic.forward(obsnext_goal, actions_tensor)
 
         # # get terminal flag
         # terminals = torch.tensor(transitions['terminals'])
@@ -339,32 +348,39 @@ class HERDDPG(object):
         
 
         # sending critic back to training
-        self.critic.train()
-        self.critic.optimiser.zero_grad() 
+        #self.critic.train()
 
-        # calculate mse loss
-        critic_mse_loss = F.mse_loss(target_q, actual_q)
-        self.critic_loss = critic_mse_loss.item()
-        critic_mse_loss.backward()
-        sync_grads(self.critic)
-
-        self.critic.optimiser.step()
-
+        
+        
     
         # calculating actor model loss
         # setting critic back in eval as we need to calculate loss from the actor model  
         # by taking action generated from a behavioural policy (target policy + OU noise)
-        self.critic.eval()
+        #self.critic.eval()
+        actual_q = self.critic(obs_goal, actions_tensor)
+
+        # calculate mse loss
+        critic_mse_loss = F.mse_loss(target_q, actual_q)
+        self.critic_loss = critic_mse_loss.item()
+        actions_real = self.actor(obs_goal)
+
+        actor_loss = -self.critic(obs_goal, actions_real).mean()
+        actor_loss += (actions_real).pow(2).mean()
+        
         self.actor.optimiser.zero_grad()
-        mu_b = self.actor.forward(obs_goal)
-        self.actor.train()
-        actor_loss = -self.critic.forward(obs_goal, mu_b)
-        actor_loss = torch.mean(actor_loss) # actor loss is -(expected loss from critic)
+        # mu_b = self.actor.forward(obs_goal)
+        #self.actor.train()
+        # actor_loss = -self.critic.forward(obs_goal, mu_b)
+        # actor_loss = torch.mean(actor_loss) # actor loss is -(expected loss from critic)
         self.actor_loss = actor_loss.item()
         actor_loss.backward()
         sync_grads(self.actor)
-
         self.actor.optimiser.step()
+
+        self.critic.optimiser.zero_grad() 
+        critic_mse_loss.backward()
+        sync_grads(self.critic)
+        self.critic.optimiser.step()
 
         # update network params
 
