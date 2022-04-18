@@ -133,3 +133,4 @@ dmypy.json
 
 # experimental files
 initial_experiment.ipynb
+./plots
