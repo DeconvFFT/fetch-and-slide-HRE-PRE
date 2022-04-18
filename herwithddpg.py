@@ -66,7 +66,7 @@ class HERDDPG(object):
         
         self.update_network_params(tau=1)
 
-    def choose_action_wnoise(self, action, noise, clip_val = 1):
+    def choose_action_wnoise(self, action, noise_prob,random_prob, clip_val = 1):
         '''
         Adds Noise to actions and clips the values of actions 
         in between a specific range defined by clip_val
@@ -85,34 +85,15 @@ class HERDDPG(object):
         mu_prime: int
            Noisy action clipped with clip_val
         '''
-        #self.actor.eval()
-        #observation = observation.reshape(1,-1)
-        #observation = observation.to(self.actor.device)
-        #with torch.no_grad():
+       
         mu = action.cpu().numpy().squeeze()
-       # mu = self.actor(observation)#.to(self.actor.device)
-
-        # mu_prime = mu + torch.tensor(self.ounoise(), dtype=torch.float).to(self.actor.device)
-        #self.actor.train()
-        # mu_prime1 =  torch.flatten(mu_prime).detach().cpu().numpy()
-        mu_prime = mu + noise*self.ounoise()
+        mu_prime = mu + noise_prob*self.ounoise()
         mu_prime = np.clip(mu_prime, -clip_val, clip_val) # clipping to keep actions in a valid range after adding noise
-
-         # random actions...
-        random_actions = np.random.uniform(low=-1, high=1,
+        mu_random = np.random.uniform(low=-1, high=1,
                                            size=self.env.nA)
-        # choose if use the random actions
-        mu_prime += np.random.binomial(1, 0.3, 1)[0] * (random_actions - mu_prime)
+        mu_prime += np.random.binomial(1, random_prob, 1)[0] * (mu_random - mu_prime)
         return mu_prime
     
-    def choose_action(self,observation, clip_val):
-        self.actor.eval()
-        observation = observation.reshape(1,-1)
-        observation = observation.to(self.actor.device)
-        mu = self.actor(observation).to(self.actor.device)
-        self.actor.train()
-        mu1 =  torch.flatten(mu).detach().cpu().numpy()
-        return np.clip(mu1, -clip_val, clip_val)
     
     def concat_inputs(self, observation, goal):
         '''
@@ -132,28 +113,15 @@ class HERDDPG(object):
         obs_goal_pair: torch.tensor
            tensor containing observed state and goal state concatenated
         '''
-
-        # obs_norm = self.obs_norm.normalize(observation)
-        # goal_norm = self.goal_norm.normalize(goal)
-
-        # if observation.shape[0] == 25:
-        #     inputs = np.concatenate([observation, goal])
-        # else:
-        inputs = np.concatenate([observation, goal], axis = 1)
-        inputs = torch.tensor(inputs, dtype=torch.float32)
-
+        if observation.shape[0]==self.env.nS:
+            inputs = np.concatenate([observation, goal])
+            inputs = torch.tensor(inputs, dtype=torch.float32).unsqueeze(0)
+        else:
+            inputs = np.concatenate([observation, goal], axis = 1)
+            inputs = torch.tensor(inputs, dtype=torch.float32)
         inputs.to(self.device)
         return inputs
-     # pre_process the inputs
-    def _preproc_inputs(self, obs, g):
-        obs_norm = self.obs_norm.normalize(obs)
-        g_norm = self.goal_norm.normalize(g)
-        # concatenate the stuffs
-        inputs = np.concatenate([obs_norm, g_norm])
-        inputs = torch.tensor(inputs, dtype=torch.float32).unsqueeze(0)
-        inputs.to(self.device)
-        return inputs
-
+     
     def generate_hindsight_buffer(self, transitions):
         '''
         Generates hindsight buffer by sampling new goals from a set of goals
@@ -330,12 +298,12 @@ class HERDDPG(object):
         rewards_tensor.to(self.device)
 
         # sending target networks and critic network into eval mode
-        # self.target_actor.eval()
-        # self.target_critic.eval()
-        # self.critic.eval()
+        self.target_actor.eval()
+        self.target_critic.eval()
+        self.critic.eval()
         with torch.no_grad():
-            target_actions = self.target_actor.forward(obsnext_goal)
-            target_q = self.target_critic.forward(obsnext_goal, target_actions)
+            target_actions = self.target_actor(obsnext_goal)
+            target_q = self.target_critic(obsnext_goal, target_actions)
             target_q = target_q.detach()
             target_q = rewards_tensor + self.gamma * target_q 
             target_q = target_q.detach()
@@ -344,40 +312,16 @@ class HERDDPG(object):
             target_clip_val = 1 / (1-self.gamma)
             # torch.clip and torch.clamp are similar. 
             target_q = torch.clamp(target_q, target_clip_val, 0)
-            # actual_q = self.critic.forward(obsnext_goal, actions_tensor)
 
-        # # get terminal flag
-        # terminals = torch.tensor(transitions['terminals'])
-
-        #target_q = rewards_tensor + self.gamma *target_q* terminals
-        # target = []
-        # for j in range(self.batch_size):
-        #     target.append(rewards_tensor[j] + self.gamma*target_q[j]*(1-int(terminals[j])))
-        # target = torch.tensor(target).to(self.critic.device)
-
-        #target_q = target.view(self.batch_size, 1)
-
-        
-
-        # sending critic back to training
-        #self.critic.train()
-
-        
-        
-    
-        # calculating actor model loss
-        # setting critic back in eval as we need to calculate loss from the actor model  
-        # by taking action generated from a behavioural policy (target policy + OU noise)
-        #self.critic.eval()
         actual_q = self.critic(obs_goal, actions_tensor)
 
         # calculate mse loss
         critic_mse_loss = F.mse_loss(target_q, actual_q)
         self.critic_loss = critic_mse_loss.item()
-        actions_real = self.actor(obs_goal)
+        mu_b = self.actor(obs_goal)
 
-        actor_loss = -self.critic(obs_goal, actions_real).mean()
-        actor_loss += (actions_real).pow(2).mean()
+        actor_loss = torch.mean(-self.critic(obs_goal, mu_b))
+        actor_loss += (mu_b).pow(2).mean()
         
         self.actor.optimiser.zero_grad()
         # mu_b = self.actor.forward(obs_goal)
@@ -398,10 +342,10 @@ class HERDDPG(object):
 
     
     def save_models(self):
-        self.actor.save_model()
-        self.critic.save_model()
-        self.target_actor.save_model()
-        self.target_critic.save_model()
+        self.actor.save_model(self.obs_norm.mean, self.obs_norm.std, self.goal_norm.mean, self.goal_norm.std)
+        self.critic.save_model(self.obs_norm.mean, self.obs_norm.std, self.goal_norm.mean, self.goal_norm.std)
+        self.target_actor.save_model(self.obs_norm.mean, self.obs_norm.std, self.goal_norm.mean, self.goal_norm.std)
+        self.target_critic.save_model(self.obs_norm.mean, self.obs_norm.std, self.goal_norm.mean, self.goal_norm.std)
     
     def load_models(self):
         self.actor.load_model()

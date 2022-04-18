@@ -8,31 +8,32 @@ from herwithddpg import HERDDPG
 import time
 from mpi4py import MPI
 import datetime
+import matplotlib.pyplot as plt
 
 def train_agent(args, env, agent=HERDDPG):
     success_rate = np.zeros(args.episodes)
+    episodes = np.arange(args.episodes)
+    std_success_rate = np.zeros(args.episodes)
     for epoch in range(args.episodes):
-        
         for cycle in range(args.cycles):
-            # reset state, goal data 
-            cycle_obs, cycle_achieved_goal, cycle_goal, cycle_actions = [],[],[],[]
+            cycle_obs, cycle_achieved_goal, cycle_goal, cycle_actions = [],[],[],[] # collects statistics for each cycle
             for _ in range(args.rollouts):
-                ep_obs, ep_achieved_goal, ep_goal, ep_actions = [],[],[],[]
+                ep_obs, ep_achieved_goal, ep_goal, ep_actions = [],[],[],[] # collects statistics for each rollout within a cycle
                 episode_reward = 0
                 observation = env.reset()
 
                 obs = observation['observation']
                 achieved_goal = observation['achieved_goal']
                 goal = observation['desired_goal']
-                # collect samples for 'args.policy_episodes' episodes
-                for ep in range(env.maxtimestamps):
-                    # collect samples
-                    #agent = HERDDPG() ##TODO: comment before running..
+                # collect samples for 'env.maxtimestamps' timestamps
+                for t in range(env.maxtimestamps):
                     with torch.no_grad():
-                        input_tensor = agent._preproc_inputs(obs, goal)
+                        obs_norm = agent.obs_norm.normalize(obs)
+                        goal_norm = agent.goal_norm.normalize(goal)
+                        input_tensor = agent.concat_inputs(obs_norm, goal_norm)
                         # print(f'input_tensor: {input_tensor}')
                         action = agent.actor(input_tensor)
-                        action = agent.choose_action_wnoise(action,args.noise, 1)
+                        action = agent.choose_action_wnoise(action,args.noise_prob, 1)
                     # print(f'action: {action}')
                     # collect statistics about next observation, achieved goals and desired goals..
                     next_observation, reward, done, _ = env.step(action)
@@ -53,84 +54,54 @@ def train_agent(args, env, agent=HERDDPG):
                 cycle_achieved_goal.append(ep_achieved_goal)
                 cycle_actions.append(ep_actions)
                 cycle_goal.append(ep_goal)
-                #print(f'cycle: {cycle}')
-                #print(f'ep_actions: {ep_actions}')
-            # convert episode data into array for easier computation
             cycle_obs = np.array(cycle_obs)
             cycle_achieved_goal = np.array(cycle_achieved_goal)
             cycle_goal = np.array(cycle_goal)
             cycle_actions = np.array(cycle_actions)
             episode_reward += agent.rewards.mean()
-            # store in replay buffer
-            print(f'for cycle: {cycle}')
-            print(f'cycle_obs: {cycle_obs.shape}')
-            print(f'cycle_achieved_goal: {cycle_achieved_goal.shape}')
-            print(f'cycle_goal: {cycle_goal.shape}')
-            # print(f'cycle_actions:{cycle_actions} ')
             agent.remember([cycle_obs, cycle_achieved_goal, cycle_goal, cycle_actions])
-            print(f'agent remembered the transition')
             # apply HER
-            
             # # store new goals from her buffer into replay buffer
-            # for i in range(len_transitions):
             agent.normalise_her_samples([cycle_obs, cycle_achieved_goal,cycle_goal, cycle_actions])
-            print(f'normalised the samples')
-            # n = len(agent.hindsight_buffer['reward'])
-            # for i in range(n):
-            #         temp_done = 1 if (i == n-1) else 0
-            #         agent.remember(agent.hindsight_buffer['state'][i],
-            #                            agent.hindsight_buffer['next_state'][i],
-            #                            agent.hindsight_buffer['actions'][i],
-            #                            agent.hindsight_buffer['reward'][i],
-            #                            agent.hindsight_buffer['goal'][i],
-            #                            temp_done
-            #                            )
-            print(f'starting model optimisation..')
+            
+            #perform ddpg optimisation for args.optimsteps=40 steps
             for _ in range(args.optimsteps):
                 # perform ddpg optimization...
                 agent.learn()
-            print(f'model optimised..')
             agent.update_network_params()      
-            print("in epoch..",epoch)
-        # print losses
-        print("Critic loss : ",agent.critic_loss )
-        print("Actor loss : " , agent.actor_loss)
-        print("Achieved goal : " , next_observation['achieved_goal'])
-        print("Desired goal : " , next_observation['desired_goal'])
-        print("[*] Number of episodes : {} Reward : {}".format(epoch, episode_reward))
-        print("[*] End of epoch ",epoch)
+            print(f'cycle: {cycle}, epoch: {epoch}')
+        print(f' epoch: {epoch} -> reward: {episode_reward}')
 
-        #if epoch%5==0:
-        print(f'eval agent started for epoch... {epoch}')
-        success_rate_epoch = _eval_agent(env,args, agent)
+        success_rate_epoch, std_success_rate_epoch = evaluate_agent(env,args, agent)
         if MPI.COMM_WORLD.Get_rank() == 0:
-            print(' epoch is: {}, eval success rate is: {:.3f}'.format(epoch, success_rate_epoch))
-            success_rate[epoch] = np.mean(success_rate_epoch)
-            print(f'success rate: {np.mean(success_rate_epoch)}')
-
+            print(f'epoch: {epoch} -> success rate: {success_rate_epoch}')
+            print(f'epoch: {epoch} -> standard dev: {std_success_rate_epoch}')
+            success_rate[epoch] = success_rate_epoch
+            std_success_rate[epoch] = std_success_rate_epoch
+            plt.plot(episodes, success_rate, label="HER+DDPG")
+            plt.fill_between(episodes, success_rate - std_success_rate, success_rate + std_success_rate, alpha=0.4)
+            plt.legend()
+            plt.title(f'Success rate vs episodes')
+            plt.xlabel("Episode")
+            plt.ylabel("Success Rate")
+            plt.savefig(f"plots/{epoch}.jpg", dpi=200, bbox_inches='tight')
         if epoch%20==0:
-            agent.actor.save_model()
-            agent.target_actor.save_model()
-            agent.critic.save_model()
-            agent.target_critic.save_model()
+            agent.save_models()
         
-        # with open('successlog.log') as f:
-        #     f.write('success_rate[epoch]:'+str(success_rate[epoch]))
-# do the evaluation
-def _eval_agent(env, args, agent):
+def evaluate_agent(env, args, agent):
     total_success_rate = []
     for _ in range(10):
         per_success_rate = []
         observation = env.reset()
         obs = observation['observation']
-        g = observation['desired_goal']
+        goal = observation['desired_goal']
         for _ in range(env.maxtimestamps):
             with torch.no_grad():
-                input_tensor = agent._preproc_inputs(obs, g)
-                action = agent.actor(input_tensor)
-                pi =agent.choose_action_wnoise(action,args.noise, 1)
-                # convert the actions
-                actions = pi
+                obs_norm = agent.obs_norm.normalize(obs)
+                goal_norm = agent.goal_norm.normalize(goal)
+                input_tensor = agent.concat_inputs(obs_norm, goal_norm)
+                actions = agent.actor(input_tensor)
+                actions =agent.choose_action_wnoise(actions,args.noise_prob, 1)
             observation_new, _, _, info = env.step(actions)
             obs = observation_new['observation']
             g = observation_new['desired_goal']
@@ -138,5 +109,7 @@ def _eval_agent(env, args, agent):
         total_success_rate.append(per_success_rate)
     total_success_rate = np.array(total_success_rate)
     local_success_rate = np.mean(total_success_rate[:, -1])
+    local_success_rate_std = np.std(total_success_rate[:, -1])
     global_success_rate = MPI.COMM_WORLD.allreduce(local_success_rate, op=MPI.SUM)
-    return global_success_rate / MPI.COMM_WORLD.Get_size()
+    global_success_rate_std = MPI.COMM_WORLD.allreduce(local_success_rate_std, op=MPI.SUM)
+    return global_success_rate / MPI.COMM_WORLD.Get_size(), global_success_rate_std/MPI.COMM_WORLD.Get_size()

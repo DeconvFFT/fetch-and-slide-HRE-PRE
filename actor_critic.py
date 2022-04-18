@@ -115,15 +115,17 @@ class Actor(nn.Module):
         output = torch.tanh(self.mu(output))
         return output
     
-    def save_model(self):
+    def save_model(self, obs_mean, obs_std, goal_mean, goal_std):
         print(f'Saving actor model at checkpoint')
         if MPI.COMM_WORLD.Get_rank() == 0:
-            torch.save(self.state_dict(), self.chkpt_file)
+            torch.save([obs_mean, obs_std, goal_mean, goal_std,self.state_dict()], self.chkpt_file)
     
     def load_model(self):
         print(f'Loading actor model from checkpoint')
         if MPI.COMM_WORLD.Get_rank() == 0:
-            self.load_state_dict(torch.load(self.chkpt_file))
+            obs_mean, obs_std, goal_mean, goal_std, state_dict = torch.load(self.chkpt_file)
+            self.load_state_dict(state_dict)
+            return obs_mean, obs_std, goal_mean, goal_std
 
 
 class Critic(nn.Module):
@@ -202,12 +204,14 @@ class Critic(nn.Module):
         q_value = self.Q(state_action_value)
         return q_value
     
-    def save_model(self):
+    def save_model(self, obs_mean, obs_std, goal_mean, goal_std):
         print(f'Saving actor model at checkpoint')
         if MPI.COMM_WORLD.Get_rank() == 0:
-            torch.save(self.state_dict(), self.chkpt_file)
+            torch.save([obs_mean, obs_std, goal_mean, goal_std,self.state_dict()], self.chkpt_file)
     
     def load_model(self):
         print(f'Loading actor model from checkpoint')
         if MPI.COMM_WORLD.Get_rank() == 0:
-            self.load_state_dict(torch.load(self.chkpt_file))
+            obs_mean, obs_std, goal_mean, goal_std, state_dict = torch.load(self.chkpt_file)
+            self.load_state_dict(state_dict)
+            return obs_mean, obs_std, goal_mean, goal_std
