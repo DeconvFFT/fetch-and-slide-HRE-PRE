@@ -2,7 +2,7 @@
 import numpy as np
 
 class HER(object):
-    def __init__(self, k, reward_func = None):
+    def __init__(self, k, reward_func = None, per= False):
         '''
         Parameters:
         ----------
@@ -18,6 +18,7 @@ class HER(object):
         '''
         self.future_prob = 1 - (1./(1+k))
         self.reward_func = reward_func
+        self.per = per
     
     def sample_transitions(self, buffer_batch, batchsize):
         '''
@@ -37,7 +38,17 @@ class HER(object):
         buffer_size = buffer_batch['actions'].shape[0]
         episode_idxs = np.random.randint(0, buffer_size, batchsize) #TODO: change this
         # create samples from 0 to T-1
+
         trajectories = np.random.randint(T, size=batchsize)
+        print(f'self.per: {self.per}')
+        if self.per:
+            priorities = buffer_batch['priority']
+            priotity_sum = np.sum(priorities[0])
+            prior = [p/priotity_sum for p in priorities[0]]
+            print(f'prior: {np.sum(prior)}')
+            trajectories = np.random.choice(T, size=batchsize, p=prior)
+            print(f'trajectories: {np.sum(trajectories)}')
+
         # create transitions from trajectories
         transitions = {k:buffer_batch[k][episode_idxs,trajectories].copy() for k in buffer_batch.keys()}
         # get indices for hindsight experience buffer

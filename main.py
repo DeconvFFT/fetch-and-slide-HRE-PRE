@@ -3,6 +3,7 @@ import argparse
 from train import *
 from test import *
 from herwithddpg import HERDDPG
+from her_perwithddpg import HERPERDDPG
 import random
 def create_environment(envname):
     env = gym.make(envname)
@@ -36,10 +37,11 @@ if __name__ =='__main__':
     parser.add_argument('--fc3_dims', type=int, default=256, help='Dimensions for fc3')
     parser.add_argument('--envname', type=str, default='FetchSlide-v1', help='Name of the environment')
     parser.add_argument('--rollouts', type=int, default=2, help='Number of rollouts')
-
     parser.add_argument('--noise_prob', type=float, default=0.2, help='Probabilityfor OU noise')
     parser.add_argument('--random_prob', type=float, default=0.3, help='Probability for selecting random actions')
-
+    parser.add_argument('--per', type=bool, default=False, help='Use PER or Not')
+    parser.add_argument('--epsilon', type=float, default=0.1, help='Use PER or Not')
+    parser.add_argument('--alpha', type=float, default=0.5, help='Use PER or Not')
 
     args = parser.parse_args()
     envname = args.envname
@@ -50,7 +52,10 @@ if __name__ =='__main__':
     np.random.seed(args.seed + MPI.COMM_WORLD.Get_rank())
     torch.manual_seed(args.seed + MPI.COMM_WORLD.Get_rank())
     print(f'env.maxtimestamps: {env.maxtimestamps}')
-    agent = HERDDPG(args.actor_lr, args.critic_lr, args.tau,env, envname, args.gamma, args.buffersize, args.fc1_dims, args.fc2_dims, args.fc3_dims, args.cliprange,args.clip_observation,args.future_episodes,args.batch_size)
+    if args.per:
+        agent = HERPERDDPG(args.actor_lr, args.critic_lr, args.tau,env, envname, args.gamma, args.buffersize, args.fc1_dims, args.fc2_dims, args.fc3_dims, args.cliprange,args.clip_observation,args.future_episodes,args.batch_size,args.per)
+    else:
+        agent = HERDDPG(args.actor_lr, args.critic_lr, args.tau,env, envname, args.gamma, args.buffersize, args.fc1_dims, args.fc2_dims, args.fc3_dims, args.cliprange,args.clip_observation,args.future_episodes,args.batch_size, args.per)
     # take the configuration for the HER
     os.environ['OMP_NUM_THREADS'] = '1'
     os.environ['MKL_NUM_THREADS'] = '1'

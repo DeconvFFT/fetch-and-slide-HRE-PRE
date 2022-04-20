@@ -4,7 +4,7 @@ import numpy as np
 
 # replay buffer class
 class ReplayBuffer(object):
-    def __init__(self, max_size, nS, nA, nG, timestamps, sampler):
+    def __init__(self, max_size, nS, nA, nG, timestamps, sampler, per):
 
         self.maxsize = max_size
         self.horizon = timestamps
@@ -14,18 +14,32 @@ class ReplayBuffer(object):
         self.nS = nS
         self.nG = nG
         self.nA = nA
-        # create a buffer
-        self.buffer = {
-            'observation': np.zeros([self.size, self.horizon+1, self.nS]), # till T+1 because we need to fetch S[T] from mapping
-            'achieved_goal': np.zeros([self.size, self.horizon+1, self.nG]), # till T+1 because we need to fetch G[T] from mapping
-            'goal': np.zeros([self.size, self.horizon, self.nG]),
-            'actions':np.zeros([self.size, self.horizon, self.nA])
-        }
+        self.per = per
+        if self.per:
+             # create a buffer
+            self.buffer = {
+                'observation': np.zeros([self.size, self.horizon+1, self.nS]), # till T+1 because we need to fetch S[T] from mapping
+                'achieved_goal': np.zeros([self.size, self.horizon+1, self.nG]), # till T+1 because we need to fetch G[T] from mapping
+                'goal': np.zeros([self.size, self.horizon, self.nG]),
+                'actions':np.zeros([self.size, self.horizon, self.nA]),
+                'priority':np.empty([self.size, self.horizon])
+            }   
+        else:
+            # create a buffer
+            self.buffer = {
+                'observation': np.zeros([self.size, self.horizon+1, self.nS]), # till T+1 because we need to fetch S[T] from mapping
+                'achieved_goal': np.zeros([self.size, self.horizon+1, self.nG]), # till T+1 because we need to fetch G[T] from mapping
+                'goal': np.zeros([self.size, self.horizon, self.nG]),
+                'actions':np.zeros([self.size, self.horizon, self.nA])
+            }
         self.lock = threading.Lock() # acquire thread lock
     
     def store_transitions(self, transition):
         #index = self.counter % self.size  # added a wrap around condition incase the buffer runs out of space
-        observation, achieved_goal, goal, actions = transition
+        if self.per: 
+            observation, achieved_goal, goal, actions, priorities = transition
+        else:
+            observation, achieved_goal, goal, actions = transition
         batch_size = observation.shape[0]
         with self.lock:
             
@@ -35,6 +49,9 @@ class ReplayBuffer(object):
             self.buffer['achieved_goal'][index] = achieved_goal
             self.buffer['goal'][index] = goal
             self.buffer['actions'][index] = actions
+            if self.per:
+                print(f'actions.shape: {actions.shape}')
+                self.buffer['priority'][index] = priorities
 
     def sample_buffer(self, batch_size):
         tmp_buffer = {}

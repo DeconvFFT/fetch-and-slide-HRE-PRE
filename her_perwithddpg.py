@@ -11,8 +11,8 @@ from normaliser import normalizer
 from her import HER
 from mpiutils import *
 
-class HERDDPG(object):
-    def __init__(self, lr_actor, lr_critic, tau, env, envname, gamma, buffer_size,fc1_dims, fc2_dims, fc3_dims,cliprange, clip_observation,future, batch_size, per):
+class HERPERDDPG(object):
+    def __init__(self, lr_actor, lr_critic, tau, env, envname, gamma, buffer_size,fc1_dims, fc2_dims, fc3_dims,cliprange, clip_observation,future, batch_size,per):
         self.gamma = gamma
         self.tau = tau
         #ReplayBuffer(max_size=buffer_size, nS = env.nS, nA = env.nA, nG = env.nG)
@@ -31,8 +31,8 @@ class HERDDPG(object):
         self.her_buffer = None
         self.critic_loss = None
         self.actor_loss = None
-        self.per = per
         self.rewards = np.zeros(1)
+        self.per = per
         # define actor and critic networks
         # actor network
         self.actor = Actor(self.lr_actor, self.actor_inputdims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'actor')
@@ -63,7 +63,7 @@ class HERDDPG(object):
         # create a test environment to avoid breaking things in train environment
         self.testenv = gym.make(envname)
 
-        self.her = HER(future,self.env.compute_reward, self.per)
+        self.her = HER(future,self.env.compute_reward,self.per)
         self.replay_memory = ReplayBuffer(max_size=buffer_size,nS = env.nS, nA=env.nA, nG=env.nG, timestamps =env.maxtimestamps, sampler = self.her.sample_transitions, per=self.per)
 
         # move the model on to a device
@@ -142,21 +142,36 @@ class HERDDPG(object):
         buffer_experience: Dict
            Buffer containing hindsight from experience replay
         '''
-
-        s, ag, g, actions = transitions
+        if self.per:
+         s, ag, g, actions, p = transitions 
+        else:  
+            s, ag, g, actions = transitions
         s_ = s[:,1:,:] # next observations
         ag_ = ag[:,1:, :] # next goals
         n_transitions = actions.shape[1] # length is equal to T
-                    
-        # HER buffer
-        buffer_her = {
-            'observation': s,
-            'achieved_goal':ag,
-            'goal':g,
-            'actions':actions,
-            'next_state':s_,
-            'achieved_goal_next':ag_
-        }
+
+        if self.per: 
+            # HER buffer
+            buffer_her = {
+                'observation': s,
+                'achieved_goal':ag,
+                'goal':g,
+                'actions':actions,
+                'next_state':s_,
+                'achieved_goal_next':ag_,
+                'priority':p
+            }
+        else:
+
+            # HER buffer
+            buffer_her = {
+                'observation': s,
+                'achieved_goal':ag,
+                'goal':g,
+                'actions':actions,
+                'next_state':s_,
+                'achieved_goal_next':ag_
+            }
         buffer_experience = self.her.sample_transitions(buffer_batch=buffer_her,batchsize=n_transitions)
         return buffer_experience
 
@@ -343,12 +358,11 @@ class HERDDPG(object):
         sync_grads(self.critic)
         self.critic.optimiser.step()
 
-        # update network params
+        
     # pre_process the inputs
     def _preproc_inputs(self, obs, g):
         obs_norm = self.obs_norm.normalize(obs)
         g_norm = self.goal_norm.normalize(g)
-        # concatenate the stuffs
         inputs = np.concatenate([obs_norm, g_norm])
         inputs = torch.tensor(inputs, dtype=torch.float32).unsqueeze(0)
         inputs.to(self.device)
