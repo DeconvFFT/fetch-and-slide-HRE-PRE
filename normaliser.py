@@ -40,7 +40,7 @@ class normalizer(object):
         # collect global sum and counts
         self.global_sum = np.zeros(self.size, dtype=np.float32)
         self.global_sumsq = np.zeros(self.size, dtype=np.float32)
-        self.global_count = np.zeros(1, dtype=np.float32)
+        self.global_count = np.ones(1, dtype=np.float32)
 
         # collect mean and std 
         self.mean = np.zeros(self.size, dtype=np.float32)

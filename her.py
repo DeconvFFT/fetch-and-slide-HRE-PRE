@@ -41,9 +41,9 @@ class HER(object):
         # create transitions from trajectories
         transitions = {k:buffer_batch[k][episode_idxs,trajectories].copy() for k in buffer_batch.keys()}
         # get indices for hindsight experience buffer
-        random_batch = np.random.uniform(size=batchsize)
-        indices = np.where(random_batch<self.future_prob)
-        future_offset = random_batch*(T-trajectories)
+        #random_batch = np.random.uniform(size=batchsize)
+        indices = np.where(np.random.uniform(size=batchsize)<self.future_prob)
+        future_offset = np.random.uniform(size=batchsize)*(T-trajectories)
         future_offset = future_offset.astype(int)
 
         future_trajectories = (trajectories+1+future_offset)[indices]

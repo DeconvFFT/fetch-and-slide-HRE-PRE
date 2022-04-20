@@ -30,15 +30,15 @@ if __name__ =='__main__':
 
     parser.add_argument('--gamma', type=float, default=0.98, help='Discount Factor')
     parser.add_argument('--tau', type=float, default=0.05, help='Proportion of actual model to be used in target model')
-    parser.add_argument('--batch_size', type=str, default=128, help='Batch size')
-    parser.add_argument('--fc1_dims', type=str, default=256, help='Dimensions for fc1')
-    parser.add_argument('--fc2_dims', type=str, default=256, help='Dimensions for fc2')
-    parser.add_argument('--fc3_dims', type=str, default=256, help='Dimensions for fc3')
+    parser.add_argument('--batch_size', type=int, default=256, help='Batch size')
+    parser.add_argument('--fc1_dims', type=int, default=256, help='Dimensions for fc1')
+    parser.add_argument('--fc2_dims', type=int, default=256, help='Dimensions for fc2')
+    parser.add_argument('--fc3_dims', type=int, default=256, help='Dimensions for fc3')
     parser.add_argument('--envname', type=str, default='FetchSlide-v1', help='Name of the environment')
-    parser.add_argument('--rollouts', type=int, default=1, help='Number of rollouts')
+    parser.add_argument('--rollouts', type=int, default=2, help='Number of rollouts')
 
     parser.add_argument('--noise_prob', type=float, default=0.2, help='Probabilityfor OU noise')
-    parser.add_argument('--random_prob', type=float, default=0.2, help='Probability for selecting random actions')
+    parser.add_argument('--random_prob', type=float, default=0.3, help='Probability for selecting random actions')
 
 
     args = parser.parse_args()

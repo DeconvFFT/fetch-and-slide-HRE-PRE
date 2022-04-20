@@ -59,7 +59,7 @@ class Actor(nn.Module):
         self.fc2 = nn.Linear(self.fc1_dims, self.fc2_dims) # hidden layer 2
         self.fc3 = nn.Linear(self.fc2_dims, self.fc3_dims) # hidden layer 3
 
-        self.mu = nn.Linear(self.fc2_dims, self.nA) # output layer-> noisy version of original policy
+        self.mu = nn.Linear(self.fc3_dims, self.nA) # output layer-> noisy version of original policy
 
         # add layer normalisation (batch norm here) as per ddpg documentation from openAI: https://spinningup.openai.com/en/latest/algorithms/ddpg.html 
         # self.bn1 = nn.LayerNorm(self.fc1_dims)

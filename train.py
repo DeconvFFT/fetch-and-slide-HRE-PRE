@@ -11,9 +11,13 @@ import datetime
 import matplotlib.pyplot as plt
 
 def train_agent(args, env, agent=HERDDPG):
-    success_rate = np.zeros(args.episodes)
-    episodes = np.arange(args.episodes)
-    std_success_rate = np.zeros(args.episodes)
+    success_rate = []
+    #np.zeros(args.episodes)
+    
+    eval_every = 10
+    
+    std_success_rate = []
+    #np.zeros(args.episodes)
     for epoch in range(args.episodes):
         for cycle in range(args.cycles):
             cycle_obs, cycle_achieved_goal, cycle_goal, cycle_actions = [],[],[],[] # collects statistics for each cycle
@@ -28,12 +32,14 @@ def train_agent(args, env, agent=HERDDPG):
                 # collect samples for 'env.maxtimestamps' timestamps
                 for t in range(env.maxtimestamps):
                     with torch.no_grad():
-                        obs_norm = agent.obs_norm.normalize(obs)
-                        goal_norm = agent.goal_norm.normalize(goal)
-                        input_tensor = agent.concat_inputs(obs_norm, goal_norm)
+                        # obs_norm = agent.obs_norm.normalize(obs)
+                        # goal_norm = agent.goal_norm.normalize(goal)
+                        # input_tensor = agent.concat_inputs(obs_norm, goal_norm)
                         # print(f'input_tensor: {input_tensor}')
-                        action = agent.actor(input_tensor)
-                        action = agent.choose_action_wnoise(action,args.noise_prob, 1)
+                        input_tensor = agent._preproc_inputs(obs, goal)
+                        pi = agent.actor(input_tensor)
+                        #action = agent.actor(input_tensor)
+                        action = agent.choose_action_wnoise(pi,args.noise_prob,args.random_prob,1)
                     # print(f'action: {action}')
                     # collect statistics about next observation, achieved goals and desired goals..
                     next_observation, reward, done, _ = env.step(action)
@@ -72,36 +78,48 @@ def train_agent(args, env, agent=HERDDPG):
             print(f'cycle: {cycle}, epoch: {epoch}')
         print(f' epoch: {epoch} -> reward: {episode_reward}')
 
-        success_rate_epoch, std_success_rate_epoch = evaluate_agent(env,args, agent)
-        if MPI.COMM_WORLD.Get_rank() == 0:
+        
+        # if MPI.COMM_WORLD.Get_rank() == 0:
+            
+        if epoch%10==0:
+            success_rate_epoch, std_success_rate_epoch = _eval_agent(env,args, agent)
             print(f'epoch: {epoch} -> success rate: {success_rate_epoch}')
             print(f'epoch: {epoch} -> standard dev: {std_success_rate_epoch}')
-            success_rate[epoch] = success_rate_epoch
-            std_success_rate[epoch] = std_success_rate_epoch
-            plt.plot(episodes, success_rate, label="HER+DDPG")
-            plt.fill_between(episodes, success_rate - std_success_rate, success_rate + std_success_rate, alpha=0.4)
-            plt.legend()
-            plt.title(f'Success rate vs episodes')
-            plt.xlabel("Episode")
-            plt.ylabel("Success Rate")
-            plt.savefig(f"plots/{epoch}.jpg", dpi=200, bbox_inches='tight')
-        if epoch%20==0:
-            agent.save_models()
-        
-def evaluate_agent(env, args, agent):
+            if MPI.COMM_WORLD.Get_rank() ==0:
+                
+                success_rate.append(success_rate_epoch)
+                #[epoch] = success_rate_epoch
+                std_success_rate.append(std_success_rate_epoch)
+                #[epoch] = std_success_rate_epoch
+                if epoch>0:
+                  plt.figure()
+                  episodes = [i*10 for i in range(len(success_rate))]
+                  print(f'episodes: {episodes}')
+                  print(f'success_rate: {success_rate}')
+
+                  print(f'std_success_rate: {std_success_rate}')
+                  plt.plot(episodes, success_rate, label="HER+DDPG")
+                  plt.fill_between(episodes, np.array(success_rate) - np.array(std_success_rate), np.array(success_rate) + np.array(std_success_rate), alpha=0.4)
+                  plt.legend()
+                  plt.title(f'Success rate vs episodes')
+                  plt.xlabel("Episode")
+                  plt.ylabel("Success Rate")
+                  plt.savefig(f"plots/{epoch}.jpg", dpi=200, bbox_inches='tight')
+                agent.save_models()
+
+def _eval_agent(env, args, agent):
     total_success_rate = []
     for _ in range(10):
         per_success_rate = []
         observation = env.reset()
         obs = observation['observation']
-        goal = observation['desired_goal']
+        g = observation['desired_goal']
         for _ in range(env.maxtimestamps):
             with torch.no_grad():
-                obs_norm = agent.obs_norm.normalize(obs)
-                goal_norm = agent.goal_norm.normalize(goal)
-                input_tensor = agent.concat_inputs(obs_norm, goal_norm)
-                actions = agent.actor(input_tensor)
-                actions =agent.choose_action_wnoise(actions,args.noise_prob, 1)
+                input_tensor = agent._preproc_inputs(obs, g)
+                pi = agent.actor(input_tensor)
+                # convert the actions
+                actions = pi.detach().cpu().numpy().squeeze()
             observation_new, _, _, info = env.step(actions)
             obs = observation_new['observation']
             g = observation_new['desired_goal']
@@ -110,6 +128,8 @@ def evaluate_agent(env, args, agent):
     total_success_rate = np.array(total_success_rate)
     local_success_rate = np.mean(total_success_rate[:, -1])
     local_success_rate_std = np.std(total_success_rate[:, -1])
+
     global_success_rate = MPI.COMM_WORLD.allreduce(local_success_rate, op=MPI.SUM)
     global_success_rate_std = MPI.COMM_WORLD.allreduce(local_success_rate_std, op=MPI.SUM)
-    return global_success_rate / MPI.COMM_WORLD.Get_size(), global_success_rate_std/MPI.COMM_WORLD.Get_size()
+
+    return global_success_rate / MPI.COMM_WORLD.Get_size(),global_success_rate_std/  MPI.COMM_WORLD.Get_size()  
