@@ -64,5 +64,5 @@ if __name__ =='__main__':
     if args.mode =='train':
         train_agent(args,env, agent)
     else:
-        test_agent(args)
+        test_agent(args, env, agent)
 

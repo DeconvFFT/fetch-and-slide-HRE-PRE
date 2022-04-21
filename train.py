@@ -50,10 +50,8 @@ def train_agent(args, env, agent=HERDDPG):
                         with torch.no_grad():
                             obs1, goal1 = agent.preprocess_inputs(obs), agent.preprocess_inputs(goal)
                             input_tensor = agent.concat_inputs(obs1, goal1)
-                            print(f'input_tensor.shape: {input_tensor.shape}')
                             action_tensor = torch.tensor(action, dtype=torch.float32)
                             action_tensor = action_tensor.view(1,-1)
-                            print(f'action_tensor.shape: {action_tensor.shape}')
                             # current q value:
                             q_curr = agent.critic(input_tensor, action_tensor)
                             q_curr = q_curr.detach().cpu().numpy().squeeze()

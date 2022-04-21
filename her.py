@@ -40,14 +40,11 @@ class HER(object):
         # create samples from 0 to T-1
 
         trajectories = np.random.randint(T, size=batchsize)
-        print(f'self.per: {self.per}')
         if self.per:
             priorities = buffer_batch['priority']
             priotity_sum = np.sum(priorities[0])
             prior = [p/priotity_sum for p in priorities[0]]
-            print(f'prior: {np.sum(prior)}')
             trajectories = np.random.choice(T, size=batchsize, p=prior)
-            print(f'trajectories: {np.sum(trajectories)}')
 
         # create transitions from trajectories
         transitions = {k:buffer_batch[k][episode_idxs,trajectories].copy() for k in buffer_batch.keys()}
