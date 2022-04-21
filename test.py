@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import gym
 from gym.wrappers import Monitor
+from gym.wrappers.monitoring import video_recorder
 
 def clip_inputs(observation, goal,cliprange ):
     obs, goal = np.clip(observation, -cliprange, cliprange), \
@@ -23,8 +24,10 @@ def concat_inputs(obs, goal):
     return torch.tensor(inputs, dtype=torch.float32)
 
 def test_agent(args, env,agent):
-    path = 'per_colab/actor'
-    # env = Monitor(env, './video', force=True)
+    path = 'per_colab/actor_100'
+    #env = Monitor(env, './video', video_callable=lambda episode_id: True,force=True)
+    vid = video_recorder.VideoRecorder(env,path="./video/vid.mp4")
+
     obs_mean, obs_std, goal_mean, goal_std, state_dict = torch.load(path, map_location=lambda storage, loc: storage) 
     
     # create actor network and load state dict
@@ -38,7 +41,8 @@ def test_agent(args, env,agent):
         goal = observation['desired_goal']
         ep_success = []
         for t in range(env.maxtimestamps):
-            env.render()
+            #env.render()
+            vid.capture_frame()
             obs, goal = clip_inputs(obs, goal, args.clip_observation)
             obs_norm, goal_norm = normalise_and_clip(obs, goal, obs_mean, goal_mean, obs_std, goal_std, args.cliprange)
             inputs = concat_inputs(obs_norm, goal_norm)
