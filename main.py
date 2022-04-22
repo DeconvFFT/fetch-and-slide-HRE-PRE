@@ -47,6 +47,7 @@ if __name__ =='__main__':
     envname = args.envname
     print(f'creating env with name: {envname}')
     env = create_environment(envname)
+  
     env.seed(args.seed + MPI.COMM_WORLD.Get_rank())
     random.seed(args.seed + MPI.COMM_WORLD.Get_rank())
     np.random.seed(args.seed + MPI.COMM_WORLD.Get_rank())

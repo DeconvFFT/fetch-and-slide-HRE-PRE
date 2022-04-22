@@ -50,7 +50,6 @@ class ReplayBuffer(object):
             self.buffer['goal'][index] = goal
             self.buffer['actions'][index] = actions
             if self.per:
-                print(f'actions.shape: {actions.shape}')
                 self.buffer['priority'][index] = priorities
 
     def sample_buffer(self, batch_size):

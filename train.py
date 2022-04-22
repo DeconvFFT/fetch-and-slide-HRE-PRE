@@ -14,7 +14,7 @@ def train_agent(args, env, agent=HERDDPG):
     success_rate = []
     #np.zeros(args.episodes)
     
-    eval_every = 10
+    eval_every = 5
     priority_sum = 0
     std_success_rate = []
     #np.zeros(args.episodes)
@@ -116,17 +116,17 @@ def train_agent(args, env, agent=HERDDPG):
                 # perform ddpg optimization...
                 agent.learn()
             agent.update_network_params()      
-            print(f'cycle: {cycle}, epoch: {epoch}')
-        print(f' epoch: {epoch} -> reward: {episode_reward}')
+            #print(f'cycle: {cycle}, epoch: {epoch}')
 
         
-        # if MPI.COMM_WORLD.Get_rank() == 0:
-            
+        if MPI.COMM_WORLD.Get_rank() == 0:
+            print(f' epoch: {epoch} -> reward: {episode_reward}')
         if epoch%eval_every==0:
             success_rate_epoch, std_success_rate_epoch = evaluate_agent(env,args, agent)
-            print(f'epoch: {epoch} -> success rate: {success_rate_epoch}')
-            print(f'epoch: {epoch} -> standard dev: {std_success_rate_epoch}')
             if MPI.COMM_WORLD.Get_rank() ==0:
+                print(f' epoch: {epoch} -> reward: {episode_reward}')
+                print(f'epoch: {epoch} -> success rate: {success_rate_epoch}')
+
                 
                 success_rate.append(success_rate_epoch)
                 #[epoch] = success_rate_epoch
@@ -138,9 +138,8 @@ def train_agent(args, env, agent=HERDDPG):
                   print(f'episodes: {episodes}')
                   print(f'success_rate: {success_rate}')
 
-                  print(f'std_success_rate: {std_success_rate}')
                   plt.plot(episodes, success_rate, label="HER+DDPG")
-                  plt.fill_between(episodes, np.array(success_rate) - np.array(std_success_rate), np.array(success_rate) + np.array(std_success_rate), alpha=0.4)
+                #   plt.fill_between(episodes, np.array(success_rate) - np.array(std_success_rate), np.array(success_rate) + np.array(std_success_rate), alpha=0.4)
                   plt.legend()
                   plt.title(f'Success rate vs episodes')
                   plt.xlabel("Episode")

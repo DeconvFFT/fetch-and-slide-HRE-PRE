@@ -1,5 +1,4 @@
 import os
-from git import Actor
 import numpy as np
 import torch
 import torch.nn as nn
@@ -24,9 +23,13 @@ def concat_inputs(obs, goal):
     return torch.tensor(inputs, dtype=torch.float32)
 
 def test_agent(args, env,agent):
-    path = 'per_colab/actor_100'
+    path = 'per_colab/actor_fetchpickandplace_55'
     #env = Monitor(env, './video', video_callable=lambda episode_id: True,force=True)
-    vid = video_recorder.VideoRecorder(env,path="./video/vid.mp4")
+    video_path = './video/'+path
+    print(video_path)
+    if not os.path.exists(video_path):
+        os.makedirs(video_path)
+    vid = video_recorder.VideoRecorder(env,path=video_path+"/vid.mp4")
 
     obs_mean, obs_std, goal_mean, goal_std, state_dict = torch.load(path, map_location=lambda storage, loc: storage) 
     
