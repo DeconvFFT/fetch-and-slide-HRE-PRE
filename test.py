@@ -23,9 +23,9 @@ def concat_inputs(obs, goal):
     return torch.tensor(inputs, dtype=torch.float32)
 
 def test_agent(args, env,agent):
-    path = 'per_colab/actor_fetchpickandplace_55'
+    path = 'models/per_colab/actor_per_ou_50'
     #env = Monitor(env, './video', video_callable=lambda episode_id: True,force=True)
-    video_path = './video/'+path
+    video_path = './video/'+path.split('models/')[1]
     print(video_path)
     if not os.path.exists(video_path):
         os.makedirs(video_path)
