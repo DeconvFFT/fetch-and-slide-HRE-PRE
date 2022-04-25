@@ -30,7 +30,11 @@ In this project, I attempt to solve fetch and slide open gym environment with Hi
 ## Target updates
 
 # Experiment Results
-![actor55](/Users/saumyamehta/Desktop/RL/fetch-and-slide-HRE-PRE/video/per_colab/actor_100/vid.mp4)
+
+
+![FetchSlide-v1 100 epochs](https://user-images.githubusercontent.com/27497059/165143321-05d9f8fa-cb39-4324-911b-92804219b567.mp4)
+
+
 # Abalation study
 
 # Multi processing setup
