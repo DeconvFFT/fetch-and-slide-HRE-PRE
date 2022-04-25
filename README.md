@@ -1,6 +1,38 @@
 # fetch-and-slide-HRE-PRE
 In this project, I attempt to solve fetch and slide open gym environment with Hindsight Experience Replay and the I experiment with Prioritised experience replay to see if there are any performance improvements
 
+# Environments tested
+- FetchSlide-v1
+- FetchPickAndPlace-v1
+
+# Environment details
+
+- **FetchSlide-v1**
+
+    This environment 
+
+- **FetchPickAndPlace-v1**
+
+    This environment
+
+# Algorithms
+
+## Hindsight Experience Replay (HER)
+
+## Priortised Experience Replay (PER)
+
+# Network Acrhitecture
+
+## Actor Network
+
+## Critic Network
+
+## Target updates
+
+# Experiment Results
+![actor55](/Users/saumyamehta/Desktop/RL/fetch-and-slide-HRE-PRE/video/per_colab/actor_100/vid.mp4)
+# Abalation study
+
 # Multi processing setup
 - Used Mpi4py module to use message passing capabilities within python. I use it to exploit multiple processors on my system.
 - mpiutils has two classes to synchronize data across multiple cpus
