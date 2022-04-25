@@ -45,14 +45,12 @@ if __name__ =='__main__':
 
     args = parser.parse_args()
     envname = args.envname
-    print(f'creating env with name: {envname}')
     env = create_environment(envname)
   
     env.seed(args.seed + MPI.COMM_WORLD.Get_rank())
     random.seed(args.seed + MPI.COMM_WORLD.Get_rank())
     np.random.seed(args.seed + MPI.COMM_WORLD.Get_rank())
     torch.manual_seed(args.seed + MPI.COMM_WORLD.Get_rank())
-    print(f'env.maxtimestamps: {env.maxtimestamps}')
     if args.per:
         agent = HERPERDDPG(args.actor_lr, args.critic_lr, args.tau,env, envname, args.gamma, args.buffersize, args.fc1_dims, args.fc2_dims, args.fc3_dims, args.cliprange,args.clip_observation,args.future_episodes,args.batch_size,args.per)
     else:

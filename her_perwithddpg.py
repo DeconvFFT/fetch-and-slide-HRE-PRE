@@ -48,8 +48,7 @@ class HERPERDDPG(object):
         # critic network
         self.target_critic = Critic(self.lr_critic, self.critic_input_dims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'target_critic')
         
-        #self.update_network_params(tau=1)
-         # load the weights into the target networks
+        # load the weights into the target networks
         self.target_actor.load_state_dict(self.actor.state_dict())
         self.target_critic.load_state_dict(self.critic.state_dict())
         # adding OU noise to make the policy noisy and generate noisy actions
@@ -60,9 +59,7 @@ class HERPERDDPG(object):
         self.obs_norm = normalizer(size = env.nS, default_clip_range=self.cliprange)
         self.goal_norm = normalizer(size = env.nG, default_clip_range=self.cliprange)
 
-        # create a test environment to avoid breaking things in train environment
-        self.testenv = gym.make(envname)
-
+       
         self.her = HER(future,self.env.compute_reward,self.per)
         self.replay_memory = ReplayBuffer(max_size=buffer_size,nS = env.nS, nA=env.nA, nG=env.nG, timestamps =env.maxtimestamps, sampler = self.her.sample_transitions, per=self.per)
 
@@ -240,39 +237,43 @@ class HERPERDDPG(object):
         if tau is None:
             tau = self.tau
         
-        # get actor and critic parameters
-        actor_params = self.actor.named_parameters()
-        critic_params = self.critic.named_parameters()
+        # # get actor and critic parameters
+        # actor_params = self.actor.named_parameters()
+        # critic_params = self.critic.named_parameters()
 
-        # get target actor and target critic parameters
-        target_actor_params = self.target_actor.named_parameters()
-        target_critic_params = self.target_critic.named_parameters()
+        # # get target actor and target critic parameters
+        # target_actor_params = self.target_actor.named_parameters()
+        # target_critic_params = self.target_critic.named_parameters()
 
-        # create new state dicts from named params 
+        # # create new state dicts from named params 
 
-        ## actor and critic state dict
-        actor_state_dict = dict(actor_params)
-        critic_state_dict = dict(critic_params)
+        # ## actor and critic state dict
+        # actor_state_dict = dict(actor_params)
+        # critic_state_dict = dict(critic_params)
 
-        ## target actor and target critic state dict
-        target_actor_state_dict = dict(target_actor_params)
-        target_critic_state_dict = dict(target_critic_params)
+        # ## target actor and target critic state dict
+        # target_actor_state_dict = dict(target_actor_params)
+        # target_critic_state_dict = dict(target_critic_params)
         
-        # do a weighted update of state dicts 
-        for name in actor_state_dict:
-            actor_state_dict[name] = tau * actor_state_dict[name].clone() + (1-tau) * target_actor_state_dict[name].clone()
+        # # do a weighted update of state dicts 
+        # for name in actor_state_dict:
+        #     actor_state_dict[name] = tau * actor_state_dict[name].clone() + (1-tau) * target_actor_state_dict[name].clone()
 
-        for name in critic_state_dict:
-            critic_state_dict[name] = tau * critic_state_dict[name].clone() + (1-tau) * target_critic_state_dict[name].clone()
-        # for target_param, param in zip(self.target_actor.parameters(), self.actor.parameters()):
-        #     target_param.data.copy_((tau) * param.data + (1-tau) * target_param.data)
-        # for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
-        #     target_param.data.copy_(tau * param.data + (1-tau)* target_param.data)
+        # for name in critic_state_dict:
+        #     critic_state_dict[name] = tau * critic_state_dict[name].clone() + (1-tau) * target_critic_state_dict[name].clone()
+        # # for target_param, param in zip(self.target_actor.parameters(), self.actor.parameters()):
+        # #     target_param.data.copy_((tau) * param.data + (1-tau) * target_param.data)
+        # # for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
+        # #     target_param.data.copy_(tau * param.data + (1-tau)* target_param.data)
         
+        # #load the updated state dicts into target models
+        # self.target_actor.load_state_dict(actor_state_dict)
+        # self.target_critic.load_state_dict(critic_state_dict)
+        for target_param, param in zip(self.target_actor.parameters(), self.actor.parameters()):
+            target_param.data.copy_((tau) * param.data + (1-tau) * target_param.data)
+        for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
+            target_param.data.copy_(tau * param.data + (1-tau)* target_param.data)
         #load the updated state dicts into target models
-        self.target_actor.load_state_dict(actor_state_dict)
-        self.target_critic.load_state_dict(critic_state_dict)
-
 
     def remember(self, transitions):
         '''
@@ -376,10 +377,11 @@ class HERPERDDPG(object):
         self.target_critic.save_model(self.obs_norm.mean, self.obs_norm.std, self.goal_norm.mean, self.goal_norm.std)
     
     def load_models(self):
-        self.actor.load_model()
-        self.critic.load_model()
-        self.target_actor.load_model()
-        self.target_critic.load_model()
+        obs_mean, obs_std, goal_mean, goal_std = self.actor.load_model()
+        # self.critic.load_model()
+        # self.target_actor.load_model()
+        # self.target_critic.load_model()
+        return obs_mean, obs_std, goal_mean, goal_std
 
 
 

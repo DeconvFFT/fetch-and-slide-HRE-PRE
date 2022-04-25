@@ -134,8 +134,8 @@ class HERDDPG(object):
 
         Parameters:
         -----------
-        transitions: tuple 
-            Tuple containing state, achieved goal, actual goal and actions
+        transitions: list() 
+            List containing state, achieved goal, actual goal and actions
         
         Returns:
         -------
@@ -148,7 +148,7 @@ class HERDDPG(object):
         ag_ = ag[:,1:, :] # next goals
         n_transitions = actions.shape[1] # length is equal to T
                     
-        # HER buffer
+        # HER buffer containing observation, achieved goal, desired goal, actions, next state and next achieved goal
         buffer_her = {
             'observation': s,
             'achieved_goal':ag,
@@ -168,8 +168,8 @@ class HERDDPG(object):
 
         Parameters:
         -----------
-        hindsight buffer: dict() 
-            Dictionary containing observations, next observations, actual goals, 
+       transitions: list() 
+            Dictionary containing list of observations, next observations, actual goals, 
             achieved goals, next achieved goals and a list of actions
         
         Returns:
@@ -226,36 +226,36 @@ class HERDDPG(object):
             tau = self.tau
         
         # # get actor and critic parameters
-        # actor_params = self.actor.named_parameters()
-        # critic_params = self.critic.named_parameters()
+        actor_params = self.actor.named_parameters()
+        critic_params = self.critic.named_parameters()
 
-        # # get target actor and target critic parameters
-        # target_actor_params = self.target_actor.named_parameters()
-        # target_critic_params = self.target_critic.named_parameters()
+        # get target actor and target critic parameters
+        target_actor_params = self.target_actor.named_parameters()
+        target_critic_params = self.target_critic.named_parameters()
 
         # # create new state dicts from named params 
 
-        # ## actor and critic state dict
-        # actor_state_dict = dict(actor_params)
-        # critic_state_dict = dict(critic_params)
+        ## actor and critic state dict
+        actor_state_dict = dict(actor_params)
+        critic_state_dict = dict(critic_params)
 
-        # ## target actor and target critic state dict
-        # target_actor_state_dict = dict(target_actor_params)
-        # target_critic_state_dict = dict(target_critic_params)
+        ## target actor and target critic state dict
+        target_actor_state_dict = dict(target_actor_params)
+        target_critic_state_dict = dict(target_critic_params)
         
-        # # do a weighted update of state dicts 
-        # for name in actor_state_dict:
-        #     actor_state_dict[name] = tau * actor_state_dict[name].clone() + (1-tau) * target_actor_state_dict[name].clone()
+        # do a weighted update of state dicts 
+        for name in actor_state_dict:
+            actor_state_dict[name] = tau * actor_state_dict[name].clone() + (1-tau) * target_actor_state_dict[name].clone()
 
-        # for name in critic_state_dict:
-        #     critic_state_dict[name] = tau * critic_state_dict[name].clone() + (1-tau) * target_critic_state_dict[name].clone()
-        for target_param, param in zip(self.target_actor.parameters(), self.actor.parameters()):
-            target_param.data.copy_((tau) * param.data + (1-tau) * target_param.data)
-        for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
-            target_param.data.copy_(tau * param.data + (1-tau)* target_param.data)
+        for name in critic_state_dict:
+            critic_state_dict[name] = tau * critic_state_dict[name].clone() + (1-tau) * target_critic_state_dict[name].clone()
+        # for target_param, param in zip(self.target_actor.parameters(), self.actor.parameters()):
+        #     target_param.data.copy_((tau) * param.data + (1-tau) * target_param.data)
+        # for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
+        #     target_param.data.copy_(tau * param.data + (1-tau)* target_param.data)
         # load the updated state dicts into target models
-        # self.target_actor.load_state_dict(actor_state_dict)
-        # self.target_critic.load_state_dict(critic_state_dict)
+        self.target_actor.load_state_dict(actor_state_dict)
+        self.target_critic.load_state_dict(critic_state_dict)
 
 
     def remember(self, transitions):
@@ -343,14 +343,11 @@ class HERDDPG(object):
         sync_grads(self.critic)
         self.critic.optimiser.step()
 
-        # update network params
-    # pre_process the inputs
-    def _preproc_inputs(self, obs, g):
+    def prepare_inputs(self, obs, g):
         obs_norm = self.obs_norm.normalize(obs)
         g_norm = self.goal_norm.normalize(g)
         # concatenate the stuffs
-        inputs = np.concatenate([obs_norm, g_norm])
-        inputs = torch.tensor(inputs, dtype=torch.float32).unsqueeze(0)
+        inputs = self.concat_inputs(obs_norm, g_norm)
         inputs.to(self.device)
         return inputs
     
@@ -361,10 +358,11 @@ class HERDDPG(object):
         self.target_critic.save_model(self.obs_norm.mean, self.obs_norm.std, self.goal_norm.mean, self.goal_norm.std)
     
     def load_models(self):
-        self.actor.load_model()
-        self.critic.load_model()
-        self.target_actor.load_model()
-        self.target_critic.load_model()
+        obs_mean, obs_std, goal_mean, goal_std = self.actor.load_model()
+        # self.critic.load_model()
+        # self.target_actor.load_model()
+        # self.target_critic.load_model()
+        return obs_mean, obs_std, goal_mean, goal_std
 
 
 
