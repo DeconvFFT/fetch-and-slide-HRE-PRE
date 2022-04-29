@@ -3,7 +3,6 @@ import argparse
 from train import *
 from test import *
 from herwithddpg import HERDDPG
-from her_perwithddpg import HERPERDDPG
 import random
 def create_environment(envname):
     '''

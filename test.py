@@ -104,8 +104,8 @@ def test_agent(args, env,agent):
     env: gym.env
         OpenAi gym environment
     
-    agent: HERDDPG or HERPERDDPG
-        RL agent. Can either be HER agent or HER+PER agent
+    agent: HERDDPG 
+        HERDDPG
         
     Returns:
     -------
