@@ -9,14 +9,22 @@ In this project, I attempt to solve fetch and slide open gym environment with Hi
 
 - **FetchSlide-v1**
 
-    This environment 
+    - It is an openai robotics environment which uses mujoco physics engine simulator to handle the environment physics. The state space is continuous and the action space is 4 dimensional. The first three dimensions specify the location of agent and 4th dimension specify the distance between claws of the agent. Actions will decide where the robot hand will be in space. There are two sets of goals, **Achieved Goal** and **Desired Goal**. Achieved goal is the goal achieved after performing an action in a given state. Desired Goal is the goal which we want the agent to achieve after performing an action from a state.
+    - The agent(robot arm) tries to slide a puck towards a goal location on a table in front of it. The surface of the table has some friction as well. The main aim in this environment is for the agent to learn to slide the puck towards it's desired location. 
 
 - **FetchPickAndPlace-v1**
 
-    This environment
+    - It is an openai robotics environment which uses mujoco physics engine simulator to handle the environment physics. The state space is continuous and the action space is 4 dimensional. The first three dimensions specify the location of agent and 4th dimension specify the distance between claws of the agent. Actions will decide where the robot hand will be in space. There are two sets of goals, **Achieved Goal** and **Desired Goal**. Achieved goal is the goal achieved after performing an action in a given state. Desired Goal is the goal which we want the agent to achieve after performing an action from a state.
+    - The agent(robot arm) tries to pick up a block and place it at the goal location on front of it. The location can either be in space above the table or on the table. The main aim in this environment is for the agent to learn to pick up the block and place it at the desired location
 
 # Algorithms
 
+- For this project, I end up using **Deep deterministic policy gradient** as the off policy algorithm of choice. And then I add HER and HER+PER on top of that to learn.
+
+## Deep deterministic Policy Gradient (DDPG)
+![DDPG algorithm](/algorithms/ddpg_algo.png)
+
+- DDPG algorithm creates noisy actions by adding OU noise to   
 ## Hindsight Experience Replay (HER)
 
 ## Priortised Experience Replay (PER)
@@ -31,9 +39,7 @@ In this project, I attempt to solve fetch and slide open gym environment with Hi
 
 # Experiment Results
 
-
 ![FetchSlide-v1 100 epochs](https://user-images.githubusercontent.com/27497059/165143321-05d9f8fa-cb39-4324-911b-92804219b567.mp4)
-
 
 # Abalation study
 

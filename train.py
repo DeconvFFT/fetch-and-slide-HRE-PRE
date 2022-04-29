@@ -12,12 +12,9 @@ import matplotlib.pyplot as plt
 
 def train_agent(args, env, agent=HERDDPG):
     success_rate = []
-    #np.zeros(args.episodes)
     
-    eval_every = 5
+    eval_every = 20
     priority_sum = 0
-    std_success_rate = []
-    #np.zeros(args.episodes)
     for epoch in range(args.episodes):
         for cycle in range(args.cycles):
             cycle_obs, cycle_achieved_goal, cycle_goal, cycle_actions,cycle_priority = [],[],[],[],[] # collects statistics for each cycle
@@ -32,15 +29,9 @@ def train_agent(args, env, agent=HERDDPG):
                 # collect samples for 'env.maxtimestamps' timestamps
                 for t in range(env.maxtimestamps):
                     with torch.no_grad():
-                        # obs_norm = agent.obs_norm.normalize(obs)
-                        # goal_norm = agent.goal_norm.normalize(goal)
-                        # input_tensor = agent.concat_inputs(obs_norm, goal_norm)
-                        # print(f'input_tensor: {input_tensor}')
-                        input_tensor = agent._preproc_inputs(obs, goal)
+                        input_tensor = agent.prepare_inputs(obs, goal)
                         pi = agent.actor(input_tensor)
-                        #action = agent.actor(input_tensor)
                         action = agent.choose_action_wnoise(pi,args.noise_prob,args.random_prob,1)
-                    # print(f'action: {action}')
                     # collect statistics about next observation, achieved goals and desired goals..
                     next_observation, reward, done, _ = env.step(action)
                     obs_next = next_observation['observation']
@@ -116,30 +107,19 @@ def train_agent(args, env, agent=HERDDPG):
                 # perform ddpg optimization...
                 agent.learn()
             agent.update_network_params()      
-            #print(f'cycle: {cycle}, epoch: {epoch}')
 
         
-        if MPI.COMM_WORLD.Get_rank() == 0:
-            print(f' epoch: {epoch} -> reward: {episode_reward}')
+       
         if epoch%eval_every==0:
-            success_rate_epoch, std_success_rate_epoch = evaluate_agent(env,args, agent)
+            success_rate_epoch = evaluate_agent(env,args, agent)
             if MPI.COMM_WORLD.Get_rank() ==0:
-                print(f' epoch: {epoch} -> reward: {episode_reward}')
-                print(f'epoch: {epoch} -> success rate: {success_rate_epoch}')
-
-                
                 success_rate.append(success_rate_epoch)
-                #[epoch] = success_rate_epoch
-                std_success_rate.append(std_success_rate_epoch)
-                #[epoch] = std_success_rate_epoch
                 if epoch>0:
                   plt.figure()
                   episodes = [i*eval_every for i in range(len(success_rate))]
                   print(f'episodes: {episodes}')
                   print(f'success_rate: {success_rate}')
-
                   plt.plot(episodes, success_rate, label="HER+DDPG")
-                #   plt.fill_between(episodes, np.array(success_rate) - np.array(std_success_rate), np.array(success_rate) + np.array(std_success_rate), alpha=0.4)
                   plt.legend()
                   plt.title(f'Success rate vs episodes')
                   plt.xlabel("Episode")
@@ -167,10 +147,5 @@ def evaluate_agent(env, args, agent):
         total_success_rate.append(per_success_rate)
     total_success_rate = np.array(total_success_rate)
     local_success_rate = np.mean(total_success_rate[:, -1])
-    local_success_rate_std = np.std(total_success_rate[:, -1])
     global_success_rate = MPI.COMM_WORLD.allreduce(local_success_rate, op=MPI.SUM)
-    global_success_rate_std = MPI.COMM_WORLD.allreduce(local_success_rate_std, op=MPI.SUM)
-    
-    
-    
-    return global_success_rate / MPI.COMM_WORLD.Get_size(),global_success_rate_std#/  MPI.COMM_WORLD.Get_size()  
+    return global_success_rate / MPI.COMM_WORLD.Get_size()

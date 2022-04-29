@@ -22,6 +22,10 @@ class HER(object):
     
     def sample_transitions(self, buffer_batch, batchsize):
         '''
+        Samples transitions from replay buffer(buffer_batch). If
+        per is enabled, samples will be selected based on 
+        stochastic prioritization using TD error
+
         Parameters:
         ----------
         buffer_batch: dict 
@@ -32,7 +36,8 @@ class HER(object):
 
         Returns:
         -------
-        None
+        transitions: dict()
+            Trajectory samples from replay buffer
         '''
         T = buffer_batch['actions'].shape[1]
         buffer_size = buffer_batch['actions'].shape[0]
@@ -49,14 +54,12 @@ class HER(object):
         # create transitions from trajectories
         transitions = {k:buffer_batch[k][episode_idxs,trajectories].copy() for k in buffer_batch.keys()}
         # get indices for hindsight experience buffer
-        #random_batch = np.random.uniform(size=batchsize)
         indices = np.where(np.random.uniform(size=batchsize)<self.future_prob)
         future_offset = np.random.uniform(size=batchsize)*(T-trajectories)
         future_offset = future_offset.astype(int)
 
         future_trajectories = (trajectories+1+future_offset)[indices]
         # set the current reached state after trajectory as a new goal
-        #print(f"buffer_batch['achieved_goal']: {buffer_batch['achieved_goal']}")
         future_goal = buffer_batch['achieved_goal'][episode_idxs[indices],future_trajectories]
         transitions['goal'][indices] = future_goal
 
@@ -64,31 +67,3 @@ class HER(object):
         transitions['reward'] = np.expand_dims(self.reward_func(transitions['achieved_goal_next'], transitions['goal'], None), 1)
         transitions = {k: transitions[k].reshape(batchsize, *transitions[k].shape[1:]) for k in transitions.keys()}
         return transitions
-
-    def get_hindsight(self, buffer):
-        '''
-        Parameters:
-        ----------
-        buffer: dict 
-            A dictionary containing memory buffer from standard experience replay
-
-        Returns:
-        -------
-        her_buffer: dict
-            A dictionary containing experiences (s||g,a,s_||g_,r) from hindsight experience replay
-        '''
-        traj_len = len(buffer['actions'])
-        new_goal = buffer['achieved_goal_next'][-1] ## S[T] is the new goal from trajectory 0...T
-
-        her_buffer = buffer.copy()
-        # need to collect rewards and goals
-        her_buffer['reward'] = np.zeros(traj_len)
-        for i in range(traj_len):
-            her_buffer['goal'][i] = new_goal ## S[T] is the new goal for each state in the trajectory
-            if i == traj_len-1 : ## end of episodes
-                 her_buffer['reward'][i] = 0
-            else:
-                her_buffer['reward'][i] = -1
-            her_buffer['goal_next'] = her_buffer['goal'][1:, :] # setting next goals
-        
-        return her_buffer

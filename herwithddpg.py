@@ -6,13 +6,64 @@ import torch.nn.functional as F
 from mpi4py import MPI # reference: https://mpi4py.readthedocs.io/en/stable/. 
 from replaybuffer import ReplayBuffer
 from actor_critic import Actor, Critic
-from ounoise import OUNoise
 from normaliser import normalizer
 from her import HER
 from mpiutils import *
 
 class HERDDPG(object):
     def __init__(self, lr_actor, lr_critic, tau, env, envname, gamma, buffer_size,fc1_dims, fc2_dims, fc3_dims,cliprange, clip_observation,future, batch_size, per):
+        '''
+        Parameters:
+        -----------
+        lr_actor: float32
+            Learning rate for actor network
+
+        lr_critic: float32
+            Learning rate for critic network
+
+        tau: float32
+            Polyak average to create weighted average of actor/critic models with target actor/critic models
+
+        env: gym.env
+            OpenAi gym environment under consideration
+
+        envname: str
+            Name of the environment under consideration
+
+        gamma: float32
+            Discount factor
+
+        buffer_size: int
+            Size of the replay buffer
+
+        fc1_dims: int
+            Dimensions of first fully connected layer in actor/critic network
+
+        fc2_dims: int
+            Dimensions of second fully connected layer in actor/critic network
+
+        fc3_dims: int
+            Dimensions of third fully connected layer in actor/critic network
+
+        cliprange: int
+            Clipping value for normalised observations/goals
+
+        clip_observation: int
+            Clipping value for observations/goals
+
+        future: int
+            How many future trajectories to consider
+
+        batch_size: int
+            Minibatch size for training
+
+        per: bool
+            Whether to use Prioritized Experience Replay or not
+
+        Returns:
+        --------
+        None
+        '''
         self.gamma = gamma
         self.tau = tau
         #ReplayBuffer(max_size=buffer_size, nS = env.nS, nA = env.nA, nG = env.nG)
@@ -33,12 +84,14 @@ class HERDDPG(object):
         self.actor_loss = None
         self.per = per
         self.rewards = np.zeros(1)
+
         # define actor and critic networks
         # actor network
         self.actor = Actor(self.lr_actor, self.actor_inputdims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'actor')
         # critic network
         self.critic = Critic(self.lr_critic, self.critic_input_dims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'critic')
 
+        # synchronize networks across cpus
         sync_networks(self.actor)
         sync_networks(self.critic)
 
@@ -48,25 +101,18 @@ class HERDDPG(object):
         # critic network
         self.target_critic = Critic(self.lr_critic, self.critic_input_dims,self.fc1_dims, self.fc2_dims, self.fc3_dims, env.nA, 'target_critic')
         
-        #self.update_network_params(tau=1)
-         # load the weights into the target networks
+        # load the weights into the target networks
         self.target_actor.load_state_dict(self.actor.state_dict())
         self.target_critic.load_state_dict(self.critic.state_dict())
-        # adding OU noise to make the policy noisy and generate noisy actions
-        self.ounoise = OUNoise(env.nA,123)
 
         # normalise observation and goal
-
         self.obs_norm = normalizer(size = env.nS, default_clip_range=self.cliprange)
         self.goal_norm = normalizer(size = env.nG, default_clip_range=self.cliprange)
 
-        # create a test environment to avoid breaking things in train environment
-        self.testenv = gym.make(envname)
-
+        # create her instance
         self.her = HER(future,self.env.compute_reward, self.per)
+        # replay buffer
         self.replay_memory = ReplayBuffer(max_size=buffer_size,nS = env.nS, nA=env.nA, nG=env.nG, timestamps =env.maxtimestamps, sampler = self.her.sample_transitions, per=self.per)
-
-        # move the model on to a device
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         
 
@@ -139,7 +185,7 @@ class HERDDPG(object):
         
         Returns:
         -------
-        buffer_experience: Dict
+        buffer_experience: dict()
            Buffer containing hindsight from experience replay
         '''
 
@@ -224,39 +270,12 @@ class HERDDPG(object):
         '''
         if tau is None:
             tau = self.tau
+
+        for target_param, param in zip(self.target_actor.parameters(), self.actor.parameters()):
+            target_param.data.copy_((tau) * param.data + (1-tau) * target_param.data)
+        for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
+            target_param.data.copy_(tau * param.data + (1-tau)* target_param.data)
         
-        # # get actor and critic parameters
-        actor_params = self.actor.named_parameters()
-        critic_params = self.critic.named_parameters()
-
-        # get target actor and target critic parameters
-        target_actor_params = self.target_actor.named_parameters()
-        target_critic_params = self.target_critic.named_parameters()
-
-        # # create new state dicts from named params 
-
-        ## actor and critic state dict
-        actor_state_dict = dict(actor_params)
-        critic_state_dict = dict(critic_params)
-
-        ## target actor and target critic state dict
-        target_actor_state_dict = dict(target_actor_params)
-        target_critic_state_dict = dict(target_critic_params)
-        
-        # do a weighted update of state dicts 
-        for name in actor_state_dict:
-            actor_state_dict[name] = tau * actor_state_dict[name].clone() + (1-tau) * target_actor_state_dict[name].clone()
-
-        for name in critic_state_dict:
-            critic_state_dict[name] = tau * critic_state_dict[name].clone() + (1-tau) * target_critic_state_dict[name].clone()
-        # for target_param, param in zip(self.target_actor.parameters(), self.actor.parameters()):
-        #     target_param.data.copy_((tau) * param.data + (1-tau) * target_param.data)
-        # for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
-        #     target_param.data.copy_(tau * param.data + (1-tau)* target_param.data)
-        # load the updated state dicts into target models
-        self.target_actor.load_state_dict(actor_state_dict)
-        self.target_critic.load_state_dict(critic_state_dict)
-
 
     def remember(self, transitions):
         '''
@@ -267,12 +286,14 @@ class HERDDPG(object):
 
     def learn(self):
         '''
-        Learns from stored transitions inside 
+        Samples trajectories from the replay buffer, genrates actions and q values based on that actions.
+        Generates target actions and target q values from target networks and then calculates error
+        between actual and target q values as the loss function. Backpropagates actor and critic loss and 
+        takes an optimiser step for both actor and critic models.
 
         Parameters:
         -----------
-        tau: np.float32
-            weight of actor/critic model for target actor/critic model 
+        None
         
         Returns:
         -------
@@ -292,10 +313,8 @@ class HERDDPG(object):
         next_goal_norm = self.goal_norm.normalize(transitions['goal_next'])
 
         # combine state and action as per "st||g and  st+1||g; || = concatenaton" and convert to tensors
-        #obs_goal= self.concat_inputs(state_norm, goal_norm)
         obs_goal = np.concatenate([state_norm, goal_norm], axis=1)
 
-        #obsnext_goal = self.concat_inputs(next_state_norm, next_goal_norm)
         obsnext_goal = np.concatenate([next_state_norm, next_goal_norm], axis=1)
         obs_goal = torch.tensor(obs_goal, dtype=torch.float32)
         obsnext_goal = torch.tensor(obsnext_goal, dtype=torch.float32)
@@ -327,12 +346,10 @@ class HERDDPG(object):
         critic_mse_loss = (target_q - actual_q).pow(2).mean()
         self.critic_loss = critic_mse_loss.item()
         mu_b = self.actor(obs_goal)
-
-        actor_loss = -self.critic(obs_goal, mu_b).mean()
+        actor_loss = -self.critic(obs_goal, mu_b).mean() # actor loss is -(expected loss from critic)
         actor_loss += (mu_b).pow(2).mean()
         
         self.actor.optimiser.zero_grad()
-        # actor_loss = torch.mean(actor_loss) # actor loss is -(expected loss from critic)
         self.actor_loss = actor_loss.item()
         actor_loss.backward()
         sync_grads(self.actor)
@@ -344,6 +361,20 @@ class HERDDPG(object):
         self.critic.optimiser.step()
 
     def prepare_inputs(self, obs, g):
+        '''
+        Parameters:
+        ----------
+        obs: list()
+            25 d list containing states
+
+        goal: list()
+            3 d list containing goals
+
+        Returns:
+        --------
+        inputs: torch.tensor
+            torch tensor containing observation and goals concatenated
+        '''
         obs_norm = self.obs_norm.normalize(obs)
         g_norm = self.goal_norm.normalize(g)
         # concatenate the stuffs
@@ -359,9 +390,6 @@ class HERDDPG(object):
     
     def load_models(self):
         obs_mean, obs_std, goal_mean, goal_std = self.actor.load_model()
-        # self.critic.load_model()
-        # self.target_actor.load_model()
-        # self.target_critic.load_model()
         return obs_mean, obs_std, goal_mean, goal_std
 
 
