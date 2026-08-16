@@ -20,18 +20,16 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
-from .config import validate_overrides
-from .proposal import _validate_code_edit
+from .config import CandidateConfig, validate_overrides
+from .metrics import EvaluationMetrics
+from .proposal import _validate_code_edit, propose_overrides
 from .runner import _replace_function_source
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 MODEL = os.getenv("BASETEN_MODEL_ID", "deepseek/deepseek-v4-flash-0731")
-DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parent
 
@@ -59,85 +57,8 @@ BUDGET_CLAMPS = {"train_episodes": (1, 60), "eval_episodes": (1, 5), "horizon": 
 # ---------------------------------------------------------------------------
 # LLM plumbing (OpenRouter, urllib — same pattern as proposal.py)
 # ---------------------------------------------------------------------------
-def _endpoint() -> str:
-    return os.getenv("OPENROUTER_ENDPOINT") or DEFAULT_ENDPOINT
-
-
 def _api_key() -> str | None:
     return os.getenv("OPENROUTER_API_KEY") or os.getenv("BASETEN_API_KEY")
-
-
-def _content(response: Mapping[str, Any]) -> str:
-    try:
-        choice = response["choices"][0]
-        message = choice["message"]
-    except (IndexError, KeyError, TypeError) as exc:
-        raise ValueError("OpenRouter response is missing an assistant message") from exc
-    content = message.get("content")
-    if isinstance(content, str) and content.strip():
-        return content
-    raise ValueError("OpenRouter returned no text proposal")
-
-
-def _call_llm(
-    system: str,
-    user: dict[str, Any],
-    *,
-    api_key: str,
-    model: str,
-    timeout: float = 120.0,
-    max_tokens: int = 8192,
-) -> str:
-    body = {
-        "model": model,
-        "temperature": 0.2,
-        "max_tokens": max_tokens,
-        "reasoning": {"exclude": True},
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": json.dumps(user, sort_keys=True)},
-        ],
-    }
-    request = Request(
-        _endpoint(),
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"OpenRouter request failed ({exc.code}): {detail}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"OpenRouter request failed: {exc.reason}") from exc
-    return _content(payload)
-
-
-def _parse_json(text: str) -> dict[str, Any]:
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-    parsed = json.loads(text)
-    if not isinstance(parsed, dict):
-        raise ValueError("proposal must be a JSON object")
-    return parsed
-
-
-def _parse_proposal(text: str) -> dict[str, Any]:
-    """Parse + validate the LLM's proposal into {config, code_edit, description}."""
-    raw = _parse_json(text)
-    config = raw.get("config", {})
-    code_edit = raw.get("code_edit")
-    description = str(raw.get("description", "")).strip()
-    if config:
-        config = validate_overrides(config)
-    if code_edit is not None:
-        code_edit = _validate_code_edit(code_edit)
-    if not config and code_edit is None:
-        raise ValueError("proposal must set config and/or code_edit")
-    return {"config": config, "code_edit": code_edit, "description": description}
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +134,54 @@ def _append_result(path: Path, commit: str, score: float | None, status: str, de
 # ---------------------------------------------------------------------------
 # Training runner
 # ---------------------------------------------------------------------------
+def _metrics_from_mapping(values: Mapping[str, Any]) -> EvaluationMetrics:
+    """Build EvaluationMetrics from a metrics.json 'metrics' sub-dict."""
+    return EvaluationMetrics(
+        success_rate=float(values.get("success_rate", 0.0)),
+        mean_final_distance=float(values.get("mean_final_distance", 1.0)),
+        mean_return=float(values.get("mean_return", 0.0)),
+        episodes=int(values.get("episodes", 0)),
+    )
+
+
+def _metrics_from_trial(trial_dir: Path) -> EvaluationMetrics:
+    """Read the best trial's metrics.json and return its EvaluationMetrics."""
+    try:
+        data = json.loads((trial_dir / "metrics.json").read_text(encoding="utf-8"))
+        return _metrics_from_mapping(data.get("metrics", data))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return EvaluationMetrics(success_rate=0.0, mean_final_distance=1.0, mean_return=0.0, episodes=0)
+
+
+def _best_trial_context(repo_root: Path, history: list[dict[str, str]]) -> tuple[CandidateConfig, EvaluationMetrics]:
+    """Recover the best kept trial's config + metrics for the proposer context."""
+    best_row = None
+    best_score = float("inf")
+    for row in history:
+        if row.get("status") != "keep":
+            continue
+        try:
+            s = float(row["score"])
+        except ValueError:
+            continue
+        if s < best_score:
+            best_score = s
+            best_row = row
+    if best_row is None:
+        return CandidateConfig(), EvaluationMetrics(success_rate=0.0, mean_final_distance=1.0, mean_return=0.0, episodes=0)
+    # Find the trial dir whose metrics.json score matches the best kept score.
+    for trial_dir in sorted((repo_root / "trials").glob("iter*")):
+        try:
+            data = json.loads((trial_dir / "metrics.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if abs(float(data.get("score", float("inf"))) - best_score) < 1e-6:
+            cfg = data.get("config", {})
+            config = CandidateConfig(**{k: v for k, v in cfg.items() if k in CandidateConfig.__dataclass_fields__})
+            return config, _metrics_from_mapping(data.get("metrics", data))
+    return CandidateConfig(), EvaluationMetrics(success_rate=0.0, mean_final_distance=1.0, mean_return=0.0, episodes=0)
+
+
 def _run_trial(
     config_json: Path,
     trial_dir: Path,
@@ -258,37 +227,29 @@ def _ask_for_change(
     api_key: str,
     model: str,
     timeout: float,
+    current_config: CandidateConfig,
+    best_metrics: EvaluationMetrics,
 ) -> dict[str, Any]:
-    system = (
-        "You are an autonomous RL researcher running a Karpathy-style autoresearch loop. "
-        "You directly edit the training file to improve the score. "
-        "score = 10*(1 - success_rate) + mean_final_distance (LOWER is better). "
-        "Return a JSON object with exactly these keys:\n"
-        '- "description": a short text description of the experiment.\n'
-        '- "config": optional object of hyperparameter overrides (e.g. {"push_coef": 8.0}).\n'
-        '- "code_edit": optional {"file", "function", "new_code"} replacing ONE function in '
-        "trainer.py/replay.py/model.py (new_code is the full replacement source).\n"
-        "Make ONE small change at a time. Prefer editing the reward function or a single "
-        "hyperparameter. Do NOT propose edits to runner.py/worker.py/proposal.py/"
-        "agent_loop.py/program.md. You must set config and/or code_edit."
+    """Propose the next experiment via the two-model proposal system: a PRO strategist
+    diagnoses WHY the current best stalls and plans the direction, a flash PROPOSER +
+    CRITIC + CODE-EDITOR turn that into an incremental config override or a code_edit.
+    Maps the multi-agent output onto the loop's {config, code_edit, description} shape."""
+    result = propose_overrides(
+        current_config,
+        best_metrics,
+        history,
+        api_key=api_key,
+        model=model,
+        timeout=timeout,
     )
-    user = {
-        "program": program,
-        "trainer.py": trainer_src,
-        "history": history[-20:],
-        "instructions": "Propose the next experiment as JSON.",
-    }
-    # Retry transient LLM failures (empty content, bad JSON) so the loop never
-    # stops on a flaky response — the charter says NEVER STOP.
-    last_err: Exception | None = None
-    for attempt in range(4):
-        try:
-            text = _call_llm(system, user, api_key=api_key, model=model, timeout=timeout)
-            return _parse_proposal(text)
-        except (ValueError, json.JSONDecodeError) as exc:
-            last_err = exc
-            print(f"[agent_loop] LLM call failed (attempt {attempt+1}/4): {exc}", flush=True)
-    raise RuntimeError(f"LLM proposal failed after 4 attempts: {last_err}")
+    if "code_edit" in result:
+        return {
+            "config": {},
+            "code_edit": result["code_edit"],
+            "description": f"code_edit {result['code_edit'].get('function', '')}",
+        }
+    # result is a dict of validated config overrides.
+    return {"config": result, "code_edit": None, "description": f"config {list(result)}"}
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +289,8 @@ def run_loop(
         if best_score is None:
             best_score = 0.0
         print(f"[agent_loop] resuming branch {branch} with best score={best_score:.4f}", flush=True)
+        # Recover the best kept trial's config + metrics for the proposer context.
+        best_config, best_metrics = _best_trial_context(repo_root, history)
     else:
         baseline_cfg = build_config({}, budget=budget)
         baseline_dir = repo_root / "trials" / "baseline"
@@ -343,6 +306,8 @@ def run_loop(
             baseline_status = "keep"
         _append_result(results_path, baseline_commit, baseline_score, baseline_status, "baseline")
         best_score = baseline_score
+        best_config = CandidateConfig(**{k: v for k, v in baseline_cfg.items() if k in CandidateConfig.__dataclass_fields__})
+        best_metrics = _metrics_from_trial(baseline_dir)
         print(f"[agent_loop] baseline score={baseline_score:.4f} status={baseline_status}", flush=True)
 
     # --- Experiment loop ---
@@ -353,7 +318,8 @@ def run_loop(
         trainer_src = (package_dir / "trainer.py").read_text(encoding="utf-8")
         history = _read_results(results_path)
         proposal = _ask_for_change(
-            program, trainer_src, history, api_key=api_key, model=model, timeout=timeout
+            program, trainer_src, history, api_key=api_key, model=model, timeout=timeout,
+            current_config=best_config, best_metrics=best_metrics,
         )
         description = proposal["description"] or f"iteration {index}"
 
@@ -382,6 +348,8 @@ def run_loop(
         elif score < best_score:
             status = "keep"
             best_score = score
+            best_config = CandidateConfig(**{k: v for k, v in cfg.items() if k in CandidateConfig.__dataclass_fields__})
+            best_metrics = _metrics_from_trial(trial_dir)
         else:
             status = "discard"
             _git(repo_root, "reset", "--hard", "HEAD~1")

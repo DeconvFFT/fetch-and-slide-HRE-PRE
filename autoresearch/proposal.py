@@ -225,11 +225,12 @@ def _call_strategist(
         return result.stdout.strip()[:1000]
     # Baseten HTTP path: request a text completion with MAX reasoning effort.
     # The pro model needs enough tokens to finish its reasoning AND emit the strategy.
+    # We EXCLUDE the reasoning trace so the token budget goes to the strategy text.
     request_body = {
         "model": model,
         "temperature": 0.4,
         "max_tokens": 4096,
-        "reasoning": {"effort": "high", "exclude": False},
+        "reasoning": {"effort": "high", "exclude": True},
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(user, sort_keys=True)},
@@ -330,12 +331,14 @@ def _call_code_editor(
     if "luna" in model or "codex" in model:
         return _call_codex(model, system, user, timeout)
     # Baseten HTTP path: request a JSON completion. The code_editor is a DECIDER
-    # (decides code logic), so it uses MAX reasoning effort.
+    # (decides code logic), so it uses MAX reasoning effort, but we EXCLUDE the
+    # reasoning trace from the returned content so the token budget goes to the
+    # actual JSON decision (a long reasoning trace otherwise truncates content).
     request_body = {
         "model": model,
         "temperature": 0.2,
         "max_tokens": 4096,
-        "reasoning": {"effort": "high", "exclude": False},
+        "reasoning": {"effort": "high", "exclude": True},
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(user, sort_keys=True)},
@@ -354,6 +357,22 @@ def _call_code_editor(
         raise RuntimeError(f"OpenRouter request failed ({exc.code})") from exc
     except URLError as exc:
         raise RuntimeError(f"OpenRouter request failed: {exc.reason}") from exc
+    # Retry once on truncation with more tokens so the decision completes.
+    truncated = False
+    if isinstance(payload, Mapping):
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
+            truncated = choices[0].get("finish_reason") == "length" or choices[0].get("native_finish_reason") == "length"
+    if truncated:
+        request_body["max_tokens"] = 8192
+        request = Request(
+            endpoint,
+            data=json.dumps(request_body).encode("utf-8"),
+            headers={"Authorization": f"Bearer {keys[0]}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
     return _parse_json(_content(payload))
 
 
