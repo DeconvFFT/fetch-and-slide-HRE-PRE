@@ -597,7 +597,14 @@ def propose_overrides(
                 "when the plateau is algorithmic, not a tuning issue. Prefer small, "
                 "incremental changes that build on the current best.",
     }
-    code_editor_payload = _call_code_editor(endpoint, DECIDER_MODEL, keys, code_editor_system, code_editor_user, timeout)
+    # The CODE-EDITOR may truncate (it emits a full function replacement, which is
+    # long) or otherwise fail. If it does, fall back to the critic's refined
+    # hyperparameter proposal — a safe, valid default — so the loop never crashes
+    # on a flaky code_editor response.
+    try:
+        code_editor_payload = _call_code_editor(endpoint, DECIDER_MODEL, keys, code_editor_system, code_editor_user, timeout)
+    except (ValueError, RuntimeError):
+        return refined
     code_edit = code_editor_payload.get("code_edit")
     if code_edit is not None:
         # A code_edit takes precedence over hyperparameters for this trial.
