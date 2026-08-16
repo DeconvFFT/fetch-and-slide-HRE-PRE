@@ -275,8 +275,17 @@ def _ask_for_change(
         "history": history[-20:],
         "instructions": "Propose the next experiment as JSON.",
     }
-    text = _call_llm(system, user, api_key=api_key, model=model, timeout=timeout)
-    return _parse_proposal(text)
+    # Retry transient LLM failures (empty content, bad JSON) so the loop never
+    # stops on a flaky response — the charter says NEVER STOP.
+    last_err: Exception | None = None
+    for attempt in range(4):
+        try:
+            text = _call_llm(system, user, api_key=api_key, model=model, timeout=timeout)
+            return _parse_proposal(text)
+        except (ValueError, json.JSONDecodeError) as exc:
+            last_err = exc
+            print(f"[agent_loop] LLM call failed (attempt {attempt+1}/4): {exc}", flush=True)
+    raise RuntimeError(f"LLM proposal failed after 4 attempts: {last_err}")
 
 
 # ---------------------------------------------------------------------------
