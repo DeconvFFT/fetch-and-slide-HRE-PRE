@@ -86,11 +86,13 @@ def _call_llm(
     api_key: str,
     model: str,
     timeout: float = 120.0,
+    max_tokens: int = 8192,
 ) -> str:
     body = {
         "model": model,
         "temperature": 0.2,
-        "max_tokens": 8192,
+        "max_tokens": max_tokens,
+        "reasoning": {"exclude": True},
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(user, sort_keys=True)},
