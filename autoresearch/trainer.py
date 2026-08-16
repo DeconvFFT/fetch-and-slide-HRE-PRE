@@ -203,12 +203,13 @@ def _make_reward_fn(config: CandidateConfig, env) -> Any:
     skill = getattr(config, "skill", "slide")
 
     def reward_fn(achieved_goal, goal, info, gripper_now=None, gripper_next=None, puck_now=None, puck_next=None):
-        # Reach shaping is ALWAYS active (it is the mechanism that teaches the actor
-        # to contact the puck). It is independent of dense_reward: even with the sparse
-        # reward, the actor gets a gradient for approaching the puck. Without this the
-        # actor never contacts the puck and the puck never moves.
+        # Reach shaping is ONLY active in dense mode. In sparse mode the reward is
+        # pure env.compute_reward (matching the reference that hit 80% success) so the
+        # target Q clamp to [-1/(1-gamma), 0] is valid — reach shaping makes Q positive
+        # and destabilizes the critic under the sparse Q bound. HER + the longer
+        # training regime teach reach without an explicit shaping term.
         reach = 0.0
-        if gripper_now is not None and gripper_next is not None and puck_now is not None:
+        if config.dense_reward and gripper_now is not None and gripper_next is not None and puck_now is not None:
             puck_pos = np.asarray(puck_now[0:3], dtype=np.float32)
             gnow = np.asarray(gripper_now, dtype=np.float32)
             gnext = np.asarray(gripper_next, dtype=np.float32)
@@ -306,12 +307,16 @@ def _update_networks(
         else:
             target_q = torch.clamp(target_q, min=-target_limit, max=0.0)
     current_q1, current_q2 = critic(state_t, action_t)
+    # Huber (smooth L1) critic loss: MSE squares large TD errors, making the critic
+    # hypersensitive to sparse-reward relabeling spikes (outlier TD errors from
+    # table-edge collisions dominate the gradient and blow up critic weights).
+    # smooth_l1 bounds outlier gradients and stabilizes the critic.
     if 'weight' in batch:
         # Importance-sampling weight corrects the priority bias (Schaul 2015).
         weight_t = torch.from_numpy(batch['weight']).to(device).unsqueeze(1)
-        critic_loss = (weight_t * (current_q1 - target_q).square()).mean() + (weight_t * (current_q2 - target_q).square()).mean()
+        critic_loss = (weight_t * nn.functional.smooth_l1_loss(current_q1, target_q, reduction='none')).mean() + (weight_t * nn.functional.smooth_l1_loss(current_q2, target_q, reduction='none')).mean()
     else:
-        critic_loss = nn.functional.mse_loss(current_q1, target_q) + nn.functional.mse_loss(current_q2, target_q)
+        critic_loss = nn.functional.smooth_l1_loss(current_q1, target_q) + nn.functional.smooth_l1_loss(current_q2, target_q)
     critic_optimizer.zero_grad(set_to_none=True)
     critic_loss.backward()
     torch.nn.utils.clip_grad_norm_(critic.parameters(), 10.0)
@@ -498,7 +503,7 @@ def train_and_evaluate(
                     else:
                         target_q = torch.clamp(target_q, min=-target_limit, max=0.0)
                 cq1, cq2 = critic(state_t, action_t)
-                critic_loss = nn.functional.mse_loss(cq1, target_q) + nn.functional.mse_loss(cq2, target_q)
+                critic_loss = nn.functional.smooth_l1_loss(cq1, target_q) + nn.functional.smooth_l1_loss(cq2, target_q)
                 critic_optimizer.zero_grad(set_to_none=True)
                 critic_loss.backward()
                 torch.nn.utils.clip_grad_norm_(critic.parameters(), 10.0)
