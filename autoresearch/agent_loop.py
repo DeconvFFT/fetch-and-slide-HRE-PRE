@@ -30,7 +30,7 @@ from .runner import _replace_function_source
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-MODEL = os.getenv("BASETEN_MODEL_ID", "deepseek/deepseek-v4-pro-0813")
+MODEL = os.getenv("BASETEN_MODEL_ID", "deepseek/deepseek-v4-flash-0731")
 DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parent
@@ -181,7 +181,10 @@ def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess:
 def _ensure_branch(repo_root: Path, branch: str) -> None:
     existing = _git(repo_root, "branch", "--list", branch).stdout.strip()
     if existing:
-        raise RuntimeError(f"branch {branch} already exists — pick a fresh tag")
+        # Resume on an existing branch (supports restart-on-failure): check it out
+        # and return the current best score so the loop continues from there.
+        _git(repo_root, "checkout", branch)
+        return
     _git(repo_root, "checkout", "-b", branch)
 
 
@@ -317,21 +320,30 @@ def run_loop(
         results_path.write_text("commit\tscore\tstatus\tdescription\n", encoding="utf-8")
 
     # --- Baseline run (no edits) ---
-    baseline_cfg = build_config({}, budget=budget)
-    baseline_dir = repo_root / "trials" / "baseline"
-    config_json = baseline_dir / "config.json"
-    config_json.parent.mkdir(parents=True, exist_ok=True)
-    config_json.write_text(json.dumps(baseline_cfg, indent=2) + "\n", encoding="utf-8")
-    baseline_score = _run_trial(config_json, baseline_dir, repo_root=repo_root, package_dir=package_dir)
-    baseline_commit = _git(repo_root, "rev-parse", "--short", "HEAD").stdout.strip()
-    if baseline_score is None:
-        baseline_score = 0.0
-        baseline_status = "crash"
+    # On a fresh branch, establish the baseline. On resume (existing branch),
+    # reuse the recorded best score so we don't re-run the baseline.
+    history = _read_results(results_path)
+    if history:
+        best_score = max((float(r["score"]) for r in history if r["status"] == "keep"), default=None)
+        if best_score is None:
+            best_score = 0.0
+        print(f"[agent_loop] resuming branch {branch} with best score={best_score:.4f}", flush=True)
     else:
-        baseline_status = "keep"
-    _append_result(results_path, baseline_commit, baseline_score, baseline_status, "baseline")
-    best_score = baseline_score
-    print(f"[agent_loop] baseline score={baseline_score:.4f} status={baseline_status}", flush=True)
+        baseline_cfg = build_config({}, budget=budget)
+        baseline_dir = repo_root / "trials" / "baseline"
+        config_json = baseline_dir / "config.json"
+        config_json.parent.mkdir(parents=True, exist_ok=True)
+        config_json.write_text(json.dumps(baseline_cfg, indent=2) + "\n", encoding="utf-8")
+        baseline_score = _run_trial(config_json, baseline_dir, repo_root=repo_root, package_dir=package_dir)
+        baseline_commit = _git(repo_root, "rev-parse", "--short", "HEAD").stdout.strip()
+        if baseline_score is None:
+            baseline_score = 0.0
+            baseline_status = "crash"
+        else:
+            baseline_status = "keep"
+        _append_result(results_path, baseline_commit, baseline_score, baseline_status, "baseline")
+        best_score = baseline_score
+        print(f"[agent_loop] baseline score={baseline_score:.4f} status={baseline_status}", flush=True)
 
     # --- Experiment loop ---
     index = 0
