@@ -295,12 +295,16 @@ def _update_networks(
         target_q1, target_q2 = target_critic(next_state_t, next_action)
         target_q = torch.min(target_q1, target_q2)
         target_q = reward_t + config.gamma * (1.0 - done_t) * target_q
-        # The reward function currently always includes reach shaping, which can make
-        # Q positive even when dense_reward is false. Clamping max=0 was therefore
-        # inconsistent and flattened the actor gradient for reach/contact rewards.
-        # Keep only the lower divergence guard for all reward types.
+        # Hard-clamp target Q before the critic MSE loss (pre-flight check). For the
+        # sparse reward Q* is bounded to [-1/(1-gamma), 0] (gamma=0.98 -> [-50, 0]);
+        # clamping prevents critic divergence. With a dense reward Q* can be positive
+        # (reach/push/goal shaping), so max=0 would flatten the actor gradient — keep
+        # only the lower divergence guard in that case.
         target_limit = 1.0 / max(1e-6, 1.0 - config.gamma)
-        target_q = torch.clamp(target_q, min=-target_limit)
+        if config.dense_reward:
+            target_q = torch.clamp(target_q, min=-target_limit)
+        else:
+            target_q = torch.clamp(target_q, min=-target_limit, max=0.0)
     current_q1, current_q2 = critic(state_t, action_t)
     if 'weight' in batch:
         # Importance-sampling weight corrects the priority bias (Schaul 2015).
@@ -411,6 +415,7 @@ def train_and_evaluate(
     global_step = 0
     actor_losses: list[float] = []
     critic_losses: list[float] = []
+    contact_rates: list[float] = []
     # Immediate startup banner: the first progress line only appears at log_every
     # episodes, so without this the run looks silent for the first ~2 minutes.
     print(
@@ -502,6 +507,11 @@ def train_and_evaluate(
         for episode in range(config.train_episodes):
             observation, _ = env.reset(seed=config.seed + episode)
             trajectory: list[dict[str, Any]] = []
+            # Contact telemetry: did the gripper get within contact distance of the
+            # puck at any point this episode? (Contact rate is the key diagnostic for
+            # whether the reach phase is working before the push phase.)
+            contact_dist = 0.06
+            episode_contact = False
             # Anneal random exploration to ~0 over training so the actor's own policy
             # dominates the collected data (DDPG needs to evaluate/improve its own
             # policy, not a permanently 30%-random one).
@@ -522,6 +532,11 @@ def train_and_evaluate(
                     action = np.clip(action + rng.normal(0.0, config.noise_std, size=4), -1.0, 1.0).astype(np.float32)
                 next_observation, reward, terminated, truncated, _ = env.step(action)
                 done = bool(terminated or truncated or step + 1 >= config.horizon)
+                # Contact check: gripper within contact_dist of the puck's position.
+                grip = np.asarray(observation["observation"][0:3], dtype=np.float32)
+                puck = np.asarray(observation["achieved_goal"][0:3], dtype=np.float32)
+                if np.linalg.norm(grip - puck) < contact_dist:
+                    episode_contact = True
                 trajectory.append(
                     {
                         "state": observation["observation"].copy(),
@@ -540,7 +555,8 @@ def train_and_evaluate(
                 if done:
                     break
             replay.add(trajectory)
-            # Anneal importance-sampling exponent beta from per_beta to per_beta_final
+            contact_rates.append(float(episode_contact))
+            # Anneal importance-sampling exponent beta from per_beta to per_bet…
             # over training (Schaul 2015). beta=0 disables bias correction entirely.
             if config.per and config.per_beta_final != config.per_beta:
                 total_steps = max(1, config.train_episodes * config.horizon)
@@ -578,9 +594,10 @@ def train_and_evaluate(
             if (episode + 1) % config.log_every == 0:
                 avg_actor = float(np.mean(actor_losses[-config.log_every * config.horizon:])) if actor_losses else 0.0
                 avg_critic = float(np.mean(critic_losses[-config.log_every * config.horizon:])) if critic_losses else 0.0
+                contact_rate = float(np.mean(contact_rates[-config.log_every:])) if contact_rates else 0.0
                 print(
                     f"progress episode={episode + 1}/{config.train_episodes} steps={global_step} "
-                    f"actor_loss={avg_actor:.4f} critic_loss={avg_critic:.4f}",
+                    f"actor_loss={avg_actor:.4f} critic_loss={avg_critic:.4f} contact_rate={contact_rate:.3f}",
                     flush=True,
                 )
             if (episode + 1) % config.eval_every == 0:
@@ -664,6 +681,7 @@ def train_and_evaluate(
         "steps": global_step,
         "actor_loss": float(np.mean(actor_losses)) if actor_losses else None,
         "critic_loss": float(np.mean(critic_losses)) if critic_losses else None,
+        "contact_rate": float(np.mean(contact_rates)) if contact_rates else None,
         "checkpoint": str(checkpoint_path),
         "device": str(device),
     }
