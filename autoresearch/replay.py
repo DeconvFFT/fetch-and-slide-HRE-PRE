@@ -159,7 +159,15 @@ class EpisodeReplay:
         transition_indices: np.ndarray,
         priorities: np.ndarray,
     ) -> None:
-        for episode_index, transition_index, priority in zip(episode_indices, transition_indices, priorities):
+        # Cap priorities to avoid PER-HER conflict: relabeled hindsight transitions
+        # produce extreme TD-error spikes on impact frames; uncapped, PER oversamples
+        # those and starves the critic of regular sliding/settling trajectories.
+        # Clamp to [eps, median*cap] so no single transition dominates sampling.
+        prio = np.abs(np.asarray(priorities, dtype=np.float64)) + self.epsilon
+        if prio.size:
+            cap = float(np.median(prio)) * 10.0 + self.epsilon
+            prio = np.clip(prio, self.epsilon, max(cap, self.epsilon))
+        for episode_index, transition_index, priority in zip(episode_indices, transition_indices, prio):
             episode_index = int(episode_index)
             transition_index = int(transition_index)
             if episode_index >= len(self.episodes):
@@ -167,4 +175,4 @@ class EpisodeReplay:
             episode = self.episodes[episode_index]
             if transition_index >= len(episode):
                 continue
-            episode[transition_index]["_priority"] = float(abs(float(priority)) + self.epsilon)
+            episode[transition_index]["_priority"] = float(priority)

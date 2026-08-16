@@ -31,6 +31,11 @@ class CandidateConfig:
     per_epsilon: float = 0.1
     noise_std: float = 0.20
     random_prob: float = 0.30
+    # TD3 target policy smoothing: noise added to target actions to reduce Q
+    # overestimation, and delayed actor updates (every N critic steps).
+    policy_noise: float = 0.2
+    noise_clip: float = 0.5
+    actor_delay: int = 2
     rehearse_critic: bool = True
     dense_reward: bool = True
     reach_coef: float = 2.0
@@ -71,6 +76,9 @@ SEARCHABLE_FIELDS = (
     "her_future",
     "noise_std",
     "random_prob",
+    "policy_noise",
+    "noise_clip",
+    "actor_delay",
     "warmup_steps",
     "train_episodes",
     "horizon",
@@ -107,6 +115,7 @@ _INT_FIELDS = {
     "train_episodes",
     "horizon",
     "updates_per_step",
+    "actor_delay",
     "log_every",
     "eval_every",
     "her_future",
@@ -114,7 +123,7 @@ _INT_FIELDS = {
     "eval_episodes",
     "eval_seed_offset",
 }
-_FLOAT_FIELDS = {"actor_lr", "actor_l2", "critic_lr", "gamma", "tau", "her_ratio", "noise_std", "random_prob", "per_alpha", "per_beta", "per_beta_final", "per_epsilon", "reach_coef", "reach_contact_bonus", "push_coef", "goal_bonus", "goal_bonus_radius"}
+_FLOAT_FIELDS = {"actor_lr", "actor_l2", "critic_lr", "gamma", "tau", "her_ratio", "noise_std", "random_prob", "policy_noise", "noise_clip", "per_alpha", "per_beta", "per_beta_final", "per_epsilon", "reach_coef", "reach_contact_bonus", "push_coef", "goal_bonus", "goal_bonus_radius"}
 _BOOL_FIELDS = {"per", "hper", "rehearse_critic", "dense_reward"}
 
 
@@ -136,6 +145,7 @@ def _validate_value(name: str, value: Any) -> Any:
             "train_episodes": (1, 100_000),
             "horizon": (1, 50),
             "updates_per_step": (1, 32),
+            "actor_delay": (1, 32),
             "log_every": (1, 100_000),
             "eval_every": (1, 100_000),
             "her_future": (1, 16),
@@ -159,6 +169,10 @@ def _validate_value(name: str, value: Any) -> Any:
             raise ValueError("actor_l2 must be non-negative")
         if name == "noise_std" and value < 0.0:
             raise ValueError("noise_std must be non-negative")
+        if name == "policy_noise" and not 0.0 <= value <= 1.0:
+            raise ValueError("policy_noise must be in [0, 1]")
+        if name == "noise_clip" and not 0.0 <= value <= 1.0:
+            raise ValueError("noise_clip must be in [0, 1]")
         if name == "reach_coef" and value < 0.0:
             raise ValueError("reach_coef must be non-negative")
         if name == "reach_contact_bonus" and value < 0.0:

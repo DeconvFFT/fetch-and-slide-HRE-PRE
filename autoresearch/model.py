@@ -21,16 +21,36 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
+    """TD3 twin critics: two independent Q-networks (clipped double Q-learning).
+    forward() returns (q1, q2); q1_only() returns Q1 for the actor loss.
+    Twin critics prevent the Q-value overestimation that stalls DDPG under sparse
+    -1/0 rewards."""
+
     def __init__(self, input_dim: int = 32, hidden_dim: int = 256) -> None:
         super().__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, hidden_dim)
-        self.q = nn.Linear(hidden_dim, 1)
+        self.q1 = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+        self.q2 = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
 
-    def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+    def forward(self, state: torch.Tensor, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         value = torch.cat([state, action], dim=-1)
-        value = F.relu(self.fc1(value))
-        value = F.relu(self.fc2(value))
-        value = F.relu(self.fc3(value))
-        return self.q(value)
+        return self.q1(value), self.q2(value)
+
+    def q1_only(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        value = torch.cat([state, action], dim=-1)
+        return self.q1(value)

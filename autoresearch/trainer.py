@@ -270,6 +270,7 @@ def _update_networks(
     reward_fn: Any,
     device: torch.device,
     distance_threshold: float = 0.05,
+    actor_step: int = 0,
 ) -> tuple[float, float]:
     batch = replay.sample(config.batch_size, config.her_ratio, rng, reward_fn, config.her_future, distance_threshold, getattr(config, "skill", "slide"))
     state = np.concatenate([obs_normalizer.normalize(batch["state"]), goal_normalizer.normalize(batch["goal"])], axis=1)
@@ -284,31 +285,35 @@ def _update_networks(
     done_t = torch.from_numpy(batch["done"]).to(device).unsqueeze(1)
 
     with torch.no_grad():
+        # TD3 target policy smoothing: add clipped noise to the target action so the
+        # critic doesn't overestimate on sharp Q peaks, then take the MIN of the two
+        # target critics (clipped double Q-learning) to curb overestimation.
         next_action = target_actor(next_state_t)
-        target_q = reward_t + config.gamma * (1.0 - done_t) * target_critic(next_state_t, next_action)
-        # Bound Q to [-1/(1-gamma), 0]. This is correct ONLY for the sparse reward
-        # (Q* is negative, in that range). With a dense reward the Q* can be positive,
-        # and clamping max=0 would force all Q<=0, contradicting the positive dense
-        # reward and flattening the actor gradient (dQ/da ~ 0). So with dense_reward
-        # we keep only the lower bound (divergence guard) and drop the max=0 cap.
+        noise = torch.randn_like(next_action) * config.policy_noise
+        noise = torch.clamp(noise, -config.noise_clip, config.noise_clip)
+        next_action = torch.clamp(next_action + noise, -1.0, 1.0)
+        target_q1, target_q2 = target_critic(next_state_t, next_action)
+        target_q = torch.min(target_q1, target_q2)
+        target_q = reward_t + config.gamma * (1.0 - done_t) * target_q
+        # The reward function currently always includes reach shaping, which can make
+        # Q positive even when dense_reward is false. Clamping max=0 was therefore
+        # inconsistent and flattened the actor gradient for reach/contact rewards.
+        # Keep only the lower divergence guard for all reward types.
         target_limit = 1.0 / max(1e-6, 1.0 - config.gamma)
-        if config.dense_reward:
-            target_q = torch.clamp(target_q, min=-target_limit)
-        else:
-            target_q = torch.clamp(target_q, min=-target_limit, max=0.0)
-    current_q = critic(state_t, action_t)
-    if "weight" in batch:
+        target_q = torch.clamp(target_q, min=-target_limit)
+    current_q1, current_q2 = critic(state_t, action_t)
+    if 'weight' in batch:
         # Importance-sampling weight corrects the priority bias (Schaul 2015).
-        weight_t = torch.from_numpy(batch["weight"]).to(device).unsqueeze(1)
-        critic_loss = (weight_t * (current_q - target_q).square()).mean()
+        weight_t = torch.from_numpy(batch['weight']).to(device).unsqueeze(1)
+        critic_loss = (weight_t * (current_q1 - target_q).square()).mean() + (weight_t * (current_q2 - target_q).square()).mean()
     else:
-        critic_loss = nn.functional.mse_loss(current_q, target_q)
+        critic_loss = nn.functional.mse_loss(current_q1, target_q) + nn.functional.mse_loss(current_q2, target_q)
     critic_optimizer.zero_grad(set_to_none=True)
     critic_loss.backward()
     torch.nn.utils.clip_grad_norm_(critic.parameters(), 10.0)
     critic_optimizer.step()
     if config.per:
-        td_error = (target_q - current_q).detach().abs().squeeze(1).cpu().numpy()
+        td_error = (target_q - current_q1).detach().abs().squeeze(1).cpu().numpy()
         # H-PER: relabeled rows carry ~zero TD error (hindsight goals are near-achieved),
         # so PER starves them. Prioritize by achieved-goal progress toward the hindsight
         # goal instead; original-goal rows keep TD priority. Use the explicit relabeled
@@ -322,13 +327,19 @@ def _update_networks(
             priority[relabeled] = np.maximum(priority[relabeled], dist_now[relabeled] - dist_next[relabeled])
         replay.update_priorities(batch["episode_index"], batch["transition_index"], priority)
 
-    actor_output = actor(state_t)
-    actor_loss = -critic(state_t, actor_output).mean() + config.actor_l2 * actor_output.square().mean()
-    actor_optimizer.zero_grad(set_to_none=True)
-    actor_loss.backward()
-    torch.nn.utils.clip_grad_norm_(actor.parameters(), 10.0)
-    actor_optimizer.step()
-    return float(actor_loss.item()), float(critic_loss.item())
+    # Delayed actor update (TD3): update the actor every `actor_delay` critic steps so
+    # the critic is accurate before the policy is pushed along its gradient.
+    actor_loss = 0.0
+    if actor_step % config.actor_delay == 0:
+        actor_output = actor(state_t)
+        actor_loss = -critic.q1_only(state_t, actor_output).mean() + config.actor_l2 * actor_output.square().mean()
+        actor_optimizer.zero_grad(set_to_none=True)
+        actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(actor.parameters(), 10.0)
+        actor_optimizer.step()
+    if isinstance(actor_loss, torch.Tensor):
+        actor_loss = float(actor_loss.detach().cpu().item())
+    return float(actor_loss), float(critic_loss.item())
 
 
 def _soft_update_targets(
@@ -470,14 +481,19 @@ def train_and_evaluate(
                 done_t = torch.from_numpy(batch["done"]).to(device).unsqueeze(1)
                 with torch.no_grad():
                     next_action = target_actor(next_state_t)
-                    target_q = reward_t + config.gamma * (1.0 - done_t) * target_critic(next_state_t, next_action)
+                    noise = torch.randn_like(next_action) * config.policy_noise
+                    noise = torch.clamp(noise, -config.noise_clip, config.noise_clip)
+                    next_action = torch.clamp(next_action + noise, -1.0, 1.0)
+                    tq1, tq2 = target_critic(next_state_t, next_action)
+                    target_q = torch.min(tq1, tq2)
+                    target_q = reward_t + config.gamma * (1.0 - done_t) * target_q
                     target_limit = 1.0 / max(1e-6, 1.0 - config.gamma)
                     if config.dense_reward:
                         target_q = torch.clamp(target_q, min=-target_limit)
                     else:
                         target_q = torch.clamp(target_q, min=-target_limit, max=0.0)
-                current_q = critic(state_t, action_t)
-                critic_loss = nn.functional.mse_loss(current_q, target_q)
+                cq1, cq2 = critic(state_t, action_t)
+                critic_loss = nn.functional.mse_loss(cq1, target_q) + nn.functional.mse_loss(cq2, target_q)
                 critic_optimizer.zero_grad(set_to_none=True)
                 critic_loss.backward()
                 torch.nn.utils.clip_grad_norm_(critic.parameters(), 10.0)
@@ -550,6 +566,7 @@ def train_and_evaluate(
                         reward_fn,
                         device,
                         distance_threshold,
+                        actor_step=global_step,
                     )
                     actor_losses.append(actor_loss)
                     critic_losses.append(critic_loss)
