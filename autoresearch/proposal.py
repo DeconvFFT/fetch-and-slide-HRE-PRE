@@ -454,7 +454,7 @@ def propose_overrides(
     if not api_key and not ("luna" in model or "codex" in model):
         raise RuntimeError("BASETEN_API_KEY (or OPENROUTER_API_KEY) is required for --proposal")
     endpoint = _endpoint()
-    numeric_fields = ("actor_lr", "critic_lr", "gamma", "tau", "her_ratio", "noise_std", "per_alpha", "per_epsilon", "her_future", "batch_size", "updates_per_step", "train_episodes", "reach_coef", "reach_contact_bonus", "push_coef", "goal_bonus", "goal_bonus_radius")
+    numeric_fields = ("actor_lr", "critic_lr", "gamma", "tau", "her_ratio", "noise_std", "per_alpha", "per_epsilon", "her_future", "batch_size", "updates_per_step", "train_episodes", "reach_coef", "reach_contact_bonus", "push_coef", "goal_bonus", "goal_bonus_radius", "success_bonus", "scripted_rollouts", "scripted_every")
     schema = {
         "type": "object",
         "properties": {
@@ -482,11 +482,18 @@ def propose_overrides(
         "You are the experiment STRATEGIST. Analyze the handoff (trial history, what worked/didn't, "
         "scores, diagnostic context) and produce a STRATEGIC PLAN for the next experiment. "
         "Use CAVEMAN + PONYTAIL skills: be ultra-terse, short bullets, no filler. "
-        "Your job is to understand WHY configs failed, not just what failed. Diagnose the root cause "
-        "(e.g. 'gamma 0.98 gave 0% success because the critic destabilized', 'actor_lr 0.001 regressed "
-        "because it overfit the replay'). Then decide the best strategy to break the plateau (e.g. "
-        "'tune goal_bonus to fix push completion', 'increase push_coef', 'change score_config to weight "
-        "distance', or 'edit the reward function in trainer.py to add a push-completion curriculum'). "
+        "Your job is to understand WHY configs failed, not just what failed. Diagnose the root cause. "
+        "CRITICAL PHYSICS FACTS (VERIFIED): random actions NEVER move the puck; the gripper starts "
+        "on the GOAL-SIDE of the puck in ~8/10 episodes; the puck is 0.68m from the goal; the ONLY "
+        "way to push the puck toward the goal is to get the gripper BEHIND the puck and push THROUGH "
+        "it. Scalar reward-knob tweaks (push_coef, goal_bonus, reach_coef) and lr/gamma/tau tweaks "
+        "have REPEATEDLY FAILED to break the 0% success plateau — the actor contacts the puck but "
+        "never pushes it toward the goal. This is a STRUCTURAL problem, not a tuning problem. "
+        "The proven structural fix is a scripted reach-then-push CURRICULUM that seeds the replay "
+        "with contact-push examples (trainer.py already has _seed_scripted_rollouts, scripted_rollouts, "
+        "scripted_every). Your strategy should focus on: (1) enabling/improving the curriculum, "
+        "(2) the gated push reward, or (3) a code_edit to the scripted policy or reward. "
+        "Do NOT recommend scalar knob tweaks. "
         "Return ONLY a short strategy string (2-4 sentences) describing what to try next and why."
     ) + context
     strategist_user = {
@@ -505,22 +512,30 @@ def propose_overrides(
         "Return only a JSON object of hyperparameter overrides. Never return code, paths, or shell commands. "
         "Valid numeric fields: actor_lr, critic_lr, gamma, tau, her_ratio, noise_std, per_alpha, per_epsilon, "
         "her_future, batch_size, updates_per_step, train_episodes, reach_coef, reach_contact_bonus, "
-        "push_coef, goal_bonus, goal_bonus_radius. "
+        "push_coef, goal_bonus, goal_bonus_radius, success_bonus, scripted_rollouts, scripted_every. "
         "You may also propose skill (slide, rotate, spin, pick, fetch), dense_reward (boolean), and "
-        "score_config (JSON string like {\"success_weight\":10,\"distance_weight\":1,\"yaw_weight\":1,\"rate_weight\":1}) "
-        "to optimize the metric that matters for the task (e.g. distance for push, yaw for rotation). "
-        "FetchSlide is a hard two-stage task (reach the puck, then push it). "
-        "PRIMARY OBJECTIVE: increase SUCCESS RATE (currently stuck at ~20%). Success rate is weighted 10x "
-        "in the score, so a config that reaches 40% success beats any distance-only improvement. "
-        "The bottleneck is PUSH COMPLETION: the actor pushes the puck to ~0.15-0.3 but stops short of the "
-        "<0.05 success threshold. To break past 20% success, tune the REWARD knobs (goal_bonus, push_coef) "
-        "or score_config to weight success higher. "
-        "FOLLOW THE STRATEGY below. IMPORTANT: make an INCREMENTAL change that builds on the "
-        "current best config, not a random jump. Change only 1-2 knobs at a time. Do NOT repeat discarded "
-        "changes. Propose something likely to INCREASE SUCCESS RATE."
+        "score_config (JSON string like {\"success_weight\":10,\"distance_weight\":1,\"yaw_weight\":1,\"rate_weight\":1}). "
+        "FetchSlide is a hard two-stage task (reach the puck, then push it toward the goal). "
+        "CRITICAL PHYSICS FACTS (VERIFIED — do not ignore): random actions NEVER move the puck; the "
+        "gripper starts on the GOAL-SIDE of the puck in ~8/10 episodes; the puck is 0.68m from the goal; "
+        "the ONLY way to push the puck toward the goal is to get the gripper BEHIND the puck and push "
+        "THROUGH it. "
+        "CRITICAL: scalar reward-knob tweaks (push_coef, goal_bonus, reach_coef) have REPEATEDLY FAILED "
+        "to break the 0% success plateau — the actor contacts the puck but never pushes it toward the goal. "
+        "The answer is STRUCTURAL, not a knob tweak. The trainer.py already implements the structural "
+        "fixes: _seed_scripted_rollouts (scripted reach-then-push curriculum), scripted_rollouts and "
+        "scripted_every (seed + interleave contact-push examples), and a contact-gated push reward. "
+        "If the current best does NOT use the curriculum, propose ENABLING it: scripted_rollouts=100 and "
+        "scripted_every=10. If it does, propose a code_edit via the CODE-EDITOR agent (do not propose "
+        "another scalar knob). "
+        "PRIMARY OBJECTIVE: increase SUCCESS RATE (currently 0%). A config that reaches any success "
+        "beats any distance-only improvement. "
+        "FOLLOW THE STRATEGY below. Make an INCREMENTAL change that builds on the current best, not a "
+        "random jump. Do NOT repeat discarded changes."
     ) + "\n\nSTRATEGY (follow this):\n" + strategy + (
         "\n\nCURRENT BEST: success=" + f"{best_metrics.success_rate:.2f}"
         + " dist=" + f"{best_metrics.mean_final_distance:.3f}"
+        + " config=" + f"{config.to_dict()}"
     )
     proposer_user = {
         "current_config": config.to_dict(),
@@ -539,11 +554,15 @@ def propose_overrides(
         "Be TERSE and token-efficient (ponytail/caveman style): no filler, just the JSON. "
         "Review it against the handoff and the current best. The proposal must be an INCREMENTAL change "
         "that builds on the best (not a random jump that will regress). "
-        "CRITICAL: lr/gamma/tau tweaks alone have repeatedly FAILED to improve success (the bottleneck is "
-        "push completion, not learning rate). If the proposal only changes lr/gamma/tau/batch_size, REJECT "
-        "it and return a REFINED proposal that tunes the REWARD knobs (push_coef, goal_bonus, goal_bonus_radius) "
-        "or score_config instead. If the proposal is good (tunes reward knobs or is a small likely-improving "
-        "change), return it unchanged. Return only a JSON object of overrides."
+        "CRITICAL: scalar reward-knob tweaks (push_coef, goal_bonus, reach_coef) and lr/gamma/tau tweaks "
+        "have REPEATEDLY FAILED to break the 0% success plateau. The actor contacts the puck but never "
+        "pushes it toward the goal — this is a STRUCTURAL problem (the gripper must get behind the puck "
+        "and push THROUGH it), not a tuning problem. "
+        "If the proposal only changes reward knobs or lr/gamma/tau/batch_size, REJECT it and return a "
+        "REFINED proposal that ENABLES THE CURRICULUM: scripted_rollouts=100 and scripted_every=10 "
+        "(these seed and interleave scripted reach-then-push examples, the proven structural fix). "
+        "If the proposal already enables the curriculum or is a small likely-improving change, return it "
+        "unchanged. Return only a JSON object of overrides."
     ) + context
     critic_user = {
         "proposed_overrides": proposal,
@@ -565,16 +584,19 @@ def propose_overrides(
         "You are the experiment CODE-EDITOR for a reinforcement-learning benchmark. "
         "Be TERSE and token-efficient (ponytail/caveman style): no filler, just the JSON. "
         "You have read the handoff, the strategy, and the current trainer.py source. "
-        "Decide whether a CODE change is more likely to break the current plateau than "
-        "another hyperparameter tweak. If the handoff shows that hyperparameter tweaks "
-        "(lr/gamma/batch_size) have repeatedly FAILED to improve success, then a code_edit "
-        "is the right move — do NOT propose another hyperparameter tweak. If hyperparameters "
-        "alone are the right lever, "
-        "return the hyperparameter overrides object (same shape as the PROPOSER/CRITIC "
-        "returned). If the plateau is caused by an algorithmic limitation in the code "
-        "(e.g. the reward function gives no gradient for the final push, the critic "
-        "target is unstable, HER is not relabeling the right transitions), return a "
-        "code_edit instead:\n"
+        "CRITICAL PHYSICS FACTS (VERIFIED): random actions NEVER move the puck; the gripper "
+        "starts on the GOAL-SIDE of the puck in ~8/10 episodes; the puck is 0.68m from the goal; "
+        "the ONLY way to push the puck toward the goal is to get the gripper BEHIND the puck and "
+        "push THROUGH it. Scalar reward-knob tweaks have REPEATEDLY FAILED to break the 0% success "
+        "plateau — the actor contacts the puck but never pushes it toward the goal. "
+        "A CODE change is the right move. trainer.py ALREADY has the structural fixes: "
+        "_seed_scripted_rollouts (scripted reach-then-push curriculum), _scripted_rollout, "
+        "scripted_rollouts/scripted_every config, and a contact-gated push reward. "
+        "If the current config does NOT enable the curriculum (scripted_rollouts=0), the best "
+        "code-level move is to make the curriculum the DEFAULT or improve it. If the curriculum "
+        "is already enabled, improve the scripted policy (e.g. better behind-puck approach, "
+        "stronger push-through) or the gated-push reward. "
+        "Return a code_edit:\n"
         '{"code_edit": {"file": "trainer.py", "function": "<function name>", '
         '"new_code": "<the COMPLETE replacement source of that function, including the '
         'def line and full body>"}}\n'
