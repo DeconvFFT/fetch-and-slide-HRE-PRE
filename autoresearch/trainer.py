@@ -198,9 +198,14 @@ def _make_reward_fn(config: CandidateConfig, env, distance_threshold: float = 0.
     For spin: progress toward the target yaw-rate.
     The dense signal is directional (unlike an absolute-distance reward, which is
     ~0 for non-contact transitions and gives no directional gradient).
-    """
-    sparse = env.compute_reward if config.skill in ("rotate", "spin") else env.unwrapped.compute_reward
-    skill = getattr(config, "skill", "slide")
+
+    For slide, the reach target is moved BEHIND the puck (opposite the goal).
+    Approaching the puck directly from the goal side lets the gripper slide past
+    without pushing; approaching the behind-puck point is the only geometry that
+    produces a goal-directed push.
+    '''
+    sparse = env.compute_reward if config.skill in ('rotate', 'spin') else env.unwrapped.compute_reward
+    skill = getattr(config, 'skill', 'slide')
 
     def reward_fn(achieved_goal, goal, info, gripper_now=None, gripper_next=None, puck_now=None, puck_next=None):
         # Reach shaping is ALWAYS active (in both dense and sparse mode): it is the
