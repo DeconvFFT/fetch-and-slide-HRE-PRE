@@ -43,6 +43,12 @@ class CandidateConfig:
     push_coef: float = 5.0
     goal_bonus: float = 4.0
     goal_bonus_radius: float = 0.4
+    # Large one-time bonus on achieving the goal (puck within distance_threshold).
+    # The reach/push shaping rewards contact and partial progress, so the actor
+    # settles for "get near the puck, push a little" with no gradient to finish the
+    # final push. A sparse success bonus teaches the critic that completing the goal
+    # is worth far more than contact, driving push completion.
+    success_bonus: float = 20.0
     warmup_steps: int = 50
     train_episodes: int = 100
     horizon: int = 50
@@ -98,6 +104,7 @@ SEARCHABLE_FIELDS = (
     "push_coef",
     "goal_bonus",
     "goal_bonus_radius",
+    "success_bonus",
     "per_alpha",
     "per_beta",
     "per_beta_final",
@@ -123,7 +130,7 @@ _INT_FIELDS = {
     "eval_episodes",
     "eval_seed_offset",
 }
-_FLOAT_FIELDS = {"actor_lr", "actor_l2", "critic_lr", "gamma", "tau", "her_ratio", "noise_std", "random_prob", "policy_noise", "noise_clip", "per_alpha", "per_beta", "per_beta_final", "per_epsilon", "reach_coef", "reach_contact_bonus", "push_coef", "goal_bonus", "goal_bonus_radius"}
+_FLOAT_FIELDS = {"actor_lr", "actor_l2", "critic_lr", "gamma", "tau", "her_ratio", "noise_std", "random_prob", "policy_noise", "noise_clip", "per_alpha", "per_beta", "per_beta_final", "per_epsilon", "reach_coef", "reach_contact_bonus", "push_coef", "goal_bonus", "goal_bonus_radius", "success_bonus"}
 _BOOL_FIELDS = {"per", "hper", "rehearse_critic", "dense_reward"}
 
 
@@ -181,6 +188,8 @@ def _validate_value(name: str, value: Any) -> Any:
             raise ValueError("push_coef must be non-negative")
         if name == "goal_bonus" and value < 0.0:
             raise ValueError("goal_bonus must be non-negative")
+        if name == "success_bonus" and value < 0.0:
+            raise ValueError("success_bonus must be non-negative")
         if name == "goal_bonus_radius" and value <= 0.0:
             raise ValueError("goal_bonus_radius must be positive")
         if name == "per_alpha" and not 0.0 <= value <= 1.0:

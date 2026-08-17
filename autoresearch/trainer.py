@@ -188,7 +188,7 @@ def evaluate_actor(
     )
 
 
-def _make_reward_fn(config: CandidateConfig, env) -> Any:
+def _make_reward_fn(config: CandidateConfig, env, distance_threshold: float = 0.05) -> Any:
     """Sparse (default) or dense progress reward.
 
     Dense reward = progress toward the goal (positive when moving toward it).
@@ -251,7 +251,15 @@ def _make_reward_fn(config: CandidateConfig, env) -> Any:
         goal_bonus = 0.0
         if d_next < config.goal_bonus_radius:
             goal_bonus = config.goal_bonus * (config.goal_bonus_radius - d_next) / config.goal_bonus_radius
-        return progress + reach + goal_bonus
+        # Sparse success bonus: a large one-time reward when the puck reaches the goal
+        # threshold. This is the key lever for push completion — the reach/push shaping
+        # rewards contact and partial progress, so without a terminal success bonus the
+        # actor settles for "get near the puck, push a little" and never finishes the
+        # final push to <0.05.
+        success = 0.0
+        if d_next < distance_threshold:
+            success = config.success_bonus
+        return progress + reach + goal_bonus + success
 
     return reward_fn
 
@@ -411,8 +419,8 @@ def train_and_evaluate(
     critic_optimizer = torch.optim.Adam(critic.parameters(), lr=config.critic_lr)
     replay = EpisodeReplay(config.replay_capacity, prioritized=config.per, alpha=config.per_alpha, epsilon=config.per_epsilon, beta=config.per_beta)
     env = _make_env(config)
-    reward_fn = _make_reward_fn(config, env)
     distance_threshold = float(getattr(env.unwrapped, "distance_threshold", 0.05))
+    reward_fn = _make_reward_fn(config, env, distance_threshold)
     global_step = 0
     actor_losses: list[float] = []
     critic_losses: list[float] = []
