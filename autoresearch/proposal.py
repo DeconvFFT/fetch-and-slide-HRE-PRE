@@ -462,6 +462,16 @@ def propose_overrides(
             "skill": {"type": "string", "enum": ["slide", "rotate", "spin", "pick", "fetch"]},
             "dense_reward": {"type": "boolean"},
             "score_config": {"type": "string"},
+            "code_edit": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string", "enum": ["trainer.py", "replay.py", "model.py"]},
+                    "function": {"type": "string"},
+                    "new_code": {"type": "string"},
+                },
+                "required": ["file", "function", "new_code"],
+                "additionalProperties": False,
+            },
         },
         "additionalProperties": False,
     }
@@ -509,7 +519,9 @@ def propose_overrides(
     proposer_system = (
         "You are the experiment PROPOSER for a reinforcement-learning benchmark. "
         "Use the CAVEMAN and PONYTAIL skills: be ultra-terse, no filler, just the JSON. "
-        "Return only a JSON object of hyperparameter overrides. Never return code, paths, or shell commands. "
+        "Return a JSON object. You may return hyperparameter overrides, OR a code_edit "
+        "{\"code_edit\": {\"file\": \"trainer.py\", \"function\": \"<name>\", \"new_code\": \"<full replacement source>\"}} "
+        "if a structural code change is the right move. "
         "Valid numeric fields: actor_lr, critic_lr, gamma, tau, her_ratio, noise_std, per_alpha, per_epsilon, "
         "her_future, batch_size, updates_per_step, train_episodes, reach_coef, reach_contact_bonus, "
         "push_coef, goal_bonus, goal_bonus_radius, success_bonus, scripted_rollouts, scripted_every. "
