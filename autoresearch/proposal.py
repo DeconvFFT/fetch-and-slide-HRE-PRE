@@ -36,6 +36,9 @@ class Proposal(BaseModel):
     push_coef: Optional[float] = Field(default=None, ge=0.0)
     goal_bonus: Optional[float] = Field(default=None, ge=0.0)
     goal_bonus_radius: Optional[float] = Field(default=None, gt=0.0)
+    success_bonus: Optional[float] = Field(default=None, ge=0.0)
+    scripted_rollouts: Optional[int] = Field(default=None, ge=0, le=100000)
+    scripted_every: Optional[int] = Field(default=None, ge=0, le=100000)
     dense_reward: Optional[bool] = None
     skill: Optional[str] = Field(default=None)
     score_config: Optional[str] = None
