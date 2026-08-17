@@ -208,6 +208,7 @@ def _make_reward_fn(config: CandidateConfig, env, distance_threshold: float = 0.
         # never contacts the puck (contact rate collapses to ~0) and the puck never
         # moves. The critic is stabilized against the positive Q this introduces by
         # the Huber loss + lower-bound-only Q clamp (see _update_networks).
+        contact_dist = 0.06
         reach = 0.0
         if gripper_now is not None and gripper_next is not None and puck_now is not None:
             puck_pos = np.asarray(puck_now[0:3], dtype=np.float32)
@@ -220,7 +221,6 @@ def _make_reward_fn(config: CandidateConfig, env, distance_threshold: float = 0.
             # puck (instead of a hard step at contact_dist, which gives no gradient).
             # This gives the actor a strong, differentiable signal to close the last
             # few cm to the puck.
-            contact_dist = 0.06
             if d_grip_next < contact_dist:
                 reach += config.reach_contact_bonus * (contact_dist - d_grip_next) / contact_dist
         if not config.dense_reward:
@@ -241,12 +241,18 @@ def _make_reward_fn(config: CandidateConfig, env, distance_threshold: float = 0.
         if skill == "spin":
             # Progress toward target yaw-rate (single scalar).
             return float(np.linalg.norm(now[0] - g[0]) - np.linalg.norm(nxt[0] - g[0])) + reach
-        # slide: position progress toward goal, scaled by push_coef so the push
-        # direction dominates the reach reward (the actor must learn to push TOWARD
-        # the goal, not just contact the puck). Plus a goal-proximity bonus that grows
-        # as the puck approaches the goal, incentivizing the FINAL push to completion
-        # (the actor currently stops at ~0.15-0.3 instead of <0.05 for success).
-        progress = config.push_coef * float(np.linalg.norm(now - g) - np.linalg.norm(nxt - g))
+        # slide: position progress toward goal. The push reward is GATED on contact:
+        # it only rewards goal-directed puck movement when the gripper is actually
+        # touching the puck. This decouples the two phases — reach (get to the puck,
+        # taught by `reach`) then push (direct it to the goal, taught by `progress`).
+        # Without the gate, a high reach_coef dominates and the actor is rewarded for
+        # approaching the puck regardless of where it pushes it (dist worsens).
+        progress = 0.0
+        if gripper_next is not None and puck_next is not None:
+            gnext = np.asarray(gripper_next, dtype=np.float32)
+            puck_nxt = np.asarray(puck_next[0:3], dtype=np.float32)
+            if np.linalg.norm(gnext - puck_nxt) < contact_dist:
+                progress = config.push_coef * float(np.linalg.norm(now - g) - np.linalg.norm(nxt - g))
         d_next = float(np.linalg.norm(nxt - g))
         goal_bonus = 0.0
         if d_next < config.goal_bonus_radius:
