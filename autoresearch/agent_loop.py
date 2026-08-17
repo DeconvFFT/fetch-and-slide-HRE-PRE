@@ -234,14 +234,26 @@ def _ask_for_change(
     diagnoses WHY the current best stalls and plans the direction, a flash PROPOSER +
     CRITIC + CODE-EDITOR turn that into an incremental config override or a code_edit.
     Maps the multi-agent output onto the loop's {config, code_edit, description} shape."""
-    result = propose_overrides(
-        current_config,
-        best_metrics,
-        history,
-        api_key=api_key,
-        model=model,
-        timeout=timeout,
-    )
+    # Retry transient LLM-proposal failures (bad JSON, malformed score_config,
+    # invalid overrides) so the loop never stops on a flaky proposal — the charter
+    # says NEVER STOP.
+    last_err: Exception | None = None
+    for attempt in range(4):
+        try:
+            result = propose_overrides(
+                current_config,
+                best_metrics,
+                history,
+                api_key=api_key,
+                model=model,
+                timeout=timeout,
+            )
+            break
+        except (ValueError, RuntimeError) as exc:
+            last_err = exc
+            print(f"[agent_loop] proposal failed (attempt {attempt+1}/4): {exc}", flush=True)
+    else:
+        raise RuntimeError(f"proposal failed after 4 attempts: {last_err}")
     if "code_edit" in result:
         return {
             "config": {},
