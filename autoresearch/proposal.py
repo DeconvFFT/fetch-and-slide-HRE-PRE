@@ -537,9 +537,15 @@ def propose_overrides(
         "THROUGH it. "
         "CRITICAL: scalar reward-knob tweaks (push_coef, goal_bonus, reach_coef) have REPEATEDLY FAILED "
         "to break the 0% success plateau — the actor contacts the puck but never pushes it toward the goal. "
-        "The answer is STRUCTURAL, not a knob tweak. The trainer.py already implements the structural "
-        "fixes: _seed_scripted_rollouts (scripted reach-then-push curriculum), scripted_rollouts and "
-        "scripted_every (seed + interleave contact-push examples), and a contact-gated push reward. "
+        "The answer is STRUCTURAL, not a knob tweak. "
+        "YOUR PRIMARY GOAL IS TASK COMPLETION: the puck must reach within 0.05m of the goal (success). "
+        "Monitor the telemetry: contact_rate (fraction of episodes the gripper touches the puck) and "
+        "mean_final_distance (how close the puck gets to the goal). If contact_rate is LOW (<0.3), the "
+        "actor is not reaching the puck — fix reach. If contact_rate is HIGH but success is 0%, the actor "
+        "contacts but does not push toward the goal — fix the push direction (must push THROUGH from "
+        "behind the puck). The trainer.py already implements the structural fixes: _seed_scripted_rollouts "
+        "(scripted reach-then-push curriculum), scripted_rollouts and scripted_every (seed + interleave "
+        "contact-push examples), and a contact-gated push reward. "
         "If the current best does NOT use the curriculum, propose ENABLING it: scripted_rollouts=100 and "
         "scripted_every=10. If it does, propose a code_edit via the CODE-EDITOR agent (do not propose "
         "another scalar knob). "
@@ -550,6 +556,7 @@ def propose_overrides(
     ) + "\n\nSTRATEGY (follow this):\n" + strategy + (
         "\n\nCURRENT BEST: success=" + f"{best_metrics.success_rate:.2f}"
         + " dist=" + f"{best_metrics.mean_final_distance:.3f}"
+        + " contact_rate=" + f"{best_metrics.contact_rate:.2f}"
         + " config=" + f"{config.to_dict()}"
     )
     proposer_user = {

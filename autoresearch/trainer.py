@@ -256,7 +256,12 @@ def _make_reward_fn(config: CandidateConfig, env, distance_threshold: float = 0.
         d_next = float(np.linalg.norm(nxt - g))
         goal_bonus = 0.0
         if d_next < config.goal_bonus_radius:
-            goal_bonus = config.goal_bonus * (config.goal_bonus_radius - d_next) / config.goal_bonus_radius
+            # Quadratic goal bonus: grows steeply as the puck approaches the goal so
+            # the FINAL push (e.g. 0.075 -> 0.05) is strongly rewarded. A linear bonus
+            # gives the same per-meter gradient everywhere, so the actor stalls just
+            # above the success threshold with no extra incentive to finish.
+            frac = (config.goal_bonus_radius - d_next) / config.goal_bonus_radius
+            goal_bonus = config.goal_bonus * frac * frac
         # Sparse success bonus: a large one-time reward when the puck reaches the goal
         # threshold. This is the key lever for push completion — the reach/push shaping
         # rewards contact and partial progress, so without a terminal success bonus the

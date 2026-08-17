@@ -10,6 +10,7 @@ class EvaluationMetrics:
     mean_final_distance: float
     mean_return: float
     episodes: int
+    contact_rate: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -21,6 +22,7 @@ class EvaluationMetrics:
             mean_final_distance=float(values["mean_final_distance"]),
             mean_return=float(values["mean_return"]),
             episodes=int(values["episodes"]),
+            contact_rate=float(values.get("contact_rate", 0.0)),
         )
 
 

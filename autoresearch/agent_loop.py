@@ -148,7 +148,18 @@ def _metrics_from_trial(trial_dir: Path) -> EvaluationMetrics:
     """Read the best trial's metrics.json and return its EvaluationMetrics."""
     try:
         data = json.loads((trial_dir / "metrics.json").read_text(encoding="utf-8"))
-        return _metrics_from_mapping(data.get("metrics", data))
+        metrics = _metrics_from_mapping(data.get("metrics", data))
+        # contact_rate is stored at the TOP level of metrics.json (not in the
+        # 'metrics' sub-dict), so merge it in.
+        if "contact_rate" in data:
+            metrics = EvaluationMetrics(
+                success_rate=metrics.success_rate,
+                mean_final_distance=metrics.mean_final_distance,
+                mean_return=metrics.mean_return,
+                episodes=metrics.episodes,
+                contact_rate=float(data["contact_rate"]),
+            )
+        return metrics
     except (OSError, ValueError, json.JSONDecodeError):
         return EvaluationMetrics(success_rate=0.0, mean_final_distance=1.0, mean_return=0.0, episodes=0)
 
@@ -178,7 +189,7 @@ def _best_trial_context(repo_root: Path, history: list[dict[str, str]]) -> tuple
         if abs(float(data.get("score", float("inf"))) - best_score) < 1e-6:
             cfg = data.get("config", {})
             config = CandidateConfig(**{k: v for k, v in cfg.items() if k in CandidateConfig.__dataclass_fields__})
-            return config, _metrics_from_mapping(data.get("metrics", data))
+            return config, _metrics_from_trial(trial_dir)
     return CandidateConfig(), EvaluationMetrics(success_rate=0.0, mean_final_distance=1.0, mean_return=0.0, episodes=0)
 
 
