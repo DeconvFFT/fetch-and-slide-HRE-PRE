@@ -49,6 +49,9 @@ class CandidateConfig:
     # final push. A sparse success bonus teaches the critic that completing the goal
     # is worth far more than contact, driving push completion.
     success_bonus: float = 20.0
+    # Number of scripted reach-then-push rollouts to seed the replay buffer with
+    # before training. 0 disables the curriculum init.
+    scripted_rollouts: int = 0
     warmup_steps: int = 50
     train_episodes: int = 100
     horizon: int = 50
@@ -105,6 +108,7 @@ SEARCHABLE_FIELDS = (
     "goal_bonus",
     "goal_bonus_radius",
     "success_bonus",
+    "scripted_rollouts",
     "per_alpha",
     "per_beta",
     "per_beta_final",
@@ -129,6 +133,7 @@ _INT_FIELDS = {
     "replay_capacity",
     "eval_episodes",
     "eval_seed_offset",
+    "scripted_rollouts",
 }
 _FLOAT_FIELDS = {"actor_lr", "actor_l2", "critic_lr", "gamma", "tau", "her_ratio", "noise_std", "random_prob", "policy_noise", "noise_clip", "per_alpha", "per_beta", "per_beta_final", "per_epsilon", "reach_coef", "reach_contact_bonus", "push_coef", "goal_bonus", "goal_bonus_radius", "success_bonus"}
 _BOOL_FIELDS = {"per", "hper", "rehearse_critic", "dense_reward"}
@@ -159,6 +164,7 @@ def _validate_value(name: str, value: Any) -> Any:
             "replay_capacity": (128, 1_000_000),
             "eval_episodes": (1, 1_000),
             "eval_seed_offset": (0, 1_000_000_000),
+            "scripted_rollouts": (0, 100_000),
         }
         low, high = bounds[name]
         if not low <= value <= high:
