@@ -380,6 +380,102 @@ def _soft_update_targets(
             target.mul_(1.0 - config.tau).add_(source, alpha=config.tau)
 
 
+def _scripted_rollout(
+    config: CandidateConfig,
+    env,
+    rng: np.random.Generator,
+    seed: int,
+) -> list[dict[str, Any]]:
+    """Run one scripted reach-then-push rollout and return its trajectory.
+
+    Two phases:
+      1. Approach: move the gripper to a point BEHIND the puck (opposite the goal)
+         using proportional control, closing the gripper to prepare for push.
+      2. Push: move the gripper in the direction from the puck to the goal,
+         maintaining contact and driving the puck toward the goal.
+
+    The gripper must approach a point BEHIND the puck (opposite the goal) so that
+    pushing toward the goal drives the gripper THROUGH the puck (verified: this
+    moves the puck 0.377 -> 0.078). Approaching the puck itself lets the gripper
+    slide past without pushing.
+    """
+    contact_dist = 0.06
+    horizon = config.horizon
+    offset_range = (0.02, 0.06)
+    push_speed_range = (0.5, 1.0)
+    obs, _ = env.reset(seed=seed)
+    trajectory: list[dict[str, Any]] = []
+    contacted = False
+    for step in range(horizon):
+        gripper_pos = obs["observation"][0:3].astype(np.float32)
+        puck_pos = obs["achieved_goal"][0:3].astype(np.float32)
+        goal = obs["desired_goal"][0:3].astype(np.float32)
+
+        # Determine phase: approach until the gripper is BEHIND the puck
+        # (opposite the goal) and close to it, then push.
+        dist_grip_puck = np.linalg.norm(gripper_pos - puck_pos)
+        dir_to_goal = goal - puck_pos
+        norm = np.linalg.norm(dir_to_goal)
+        if norm < 1e-6:
+            behind = puck_pos
+        else:
+            behind = puck_pos - (dir_to_goal / norm) * 0.04
+        behind_dist = np.linalg.norm(gripper_pos - behind)
+        if not contacted and behind_dist < 0.08:
+            contacted = True
+
+        if not contacted:
+            # Approach: move to a point behind the puck relative to the goal.
+            if norm < 1e-6:
+                target = puck_pos
+            else:
+                offset = rng.uniform(*offset_range)
+                target = puck_pos - (dir_to_goal / norm) * offset
+            delta = target - gripper_pos
+            gain = 3.0
+            action = np.zeros(4, dtype=np.float32)
+            action[0:3] = np.clip(delta * gain, -1.0, 1.0)
+            action[3] = 1.0  # close gripper to prepare for push
+        else:
+            # Push: move in the direction from puck to goal (THROUGH the puck).
+            if norm < 1e-6:
+                action = np.zeros(4, dtype=np.float32)
+            else:
+                # If the gripper lost contact (overshot past the puck), re-approach
+                # the behind-point before pushing again; otherwise push through.
+                if dist_grip_puck > 0.10:
+                    target = behind
+                    delta = target - gripper_pos
+                    action = np.zeros(4, dtype=np.float32)
+                    action[0:3] = np.clip(delta * 3.0, -1.0, 1.0)
+                    action[3] = 1.0
+                else:
+                    push_speed = rng.uniform(*push_speed_range)
+                    action = np.zeros(4, dtype=np.float32)
+                    action[0:3] = np.clip((dir_to_goal / norm) * push_speed, -1.0, 1.0)
+                    action[3] = 1.0  # keep gripper closed
+
+        next_obs, _, terminated, truncated, _ = env.step(action)
+        done = bool(terminated or truncated or step + 1 >= horizon)
+        trajectory.append(
+            {
+                "state": obs["observation"].copy(),
+                "achieved_goal": obs["achieved_goal"].copy(),
+                "goal": obs["desired_goal"].copy(),
+                "action": action.copy(),
+                "next_state": next_obs["observation"].copy(),
+                "next_achieved_goal": next_obs["achieved_goal"].copy(),
+                "gripper": gripper_pos.copy(),
+                "next_gripper": next_obs["observation"][0:3].copy(),
+                "done": done,
+            }
+        )
+        obs = next_obs
+        if done:
+            break
+    return trajectory
+
+
 def _seed_scripted_rollouts(
     config: CandidateConfig,
     env,
@@ -405,100 +501,14 @@ def _seed_scripted_rollouts(
     scripted data to give better initial statistics.
     """
     num_rollouts = getattr(config, "scripted_rollouts", 100)
-    contact_dist = 0.06  # same as used in reward shaping
-    horizon = config.horizon
-    # Slight variation in approach offset and push speed to diversify the data.
-    # The gripper must approach a point BEHIND the puck (opposite the goal) so that
-    # pushing toward the goal drives the gripper THROUGH the puck (verified: this
-    # moves the puck 0.377 -> 0.078). Approaching the puck itself lets the gripper
-    # slide past without pushing.
-    offset_range = (0.02, 0.06)
-    push_speed_range = (0.5, 1.0)
-
     for rollout_idx in range(num_rollouts):
         # Use a distinct seed range to avoid overlapping with training seeds.
         seed = config.seed + 10_000 + rollout_idx
-        obs, _ = env.reset(seed=seed)
-        trajectory = []
-        contacted = False
-        for step in range(horizon):
-            gripper_pos = obs["observation"][0:3].astype(np.float32)
-            puck_pos = obs["achieved_goal"][0:3].astype(np.float32)
-            goal = obs["desired_goal"][0:3].astype(np.float32)
-
-            # Determine phase: approach until the gripper is BEHIND the puck
-            # (opposite the goal) and close to it, then push. Merely being within
-            # contact_dist of the puck is not enough — if the gripper is on the goal
-            # side, pushing toward the goal slides past without moving the puck.
-            dist_grip_puck = np.linalg.norm(gripper_pos - puck_pos)
-            dir_to_goal = goal - puck_pos
-            norm = np.linalg.norm(dir_to_goal)
-            if norm < 1e-6:
-                behind = puck_pos
-            else:
-                behind = puck_pos - (dir_to_goal / norm) * 0.04
-            behind_dist = np.linalg.norm(gripper_pos - behind)
-            if not contacted and behind_dist < 0.08:
-                contacted = True
-
-            if not contacted:
-                # Approach: move to a point behind the puck relative to the goal.
-                if norm < 1e-6:
-                    # Puck already at goal; just move to puck.
-                    target = puck_pos
-                else:
-                    offset = rng.uniform(*offset_range)
-                    target = puck_pos - (dir_to_goal / norm) * offset
-                delta = target - gripper_pos
-                gain = 3.0  # proportional gain (higher to close the last cm)
-                action = np.zeros(4, dtype=np.float32)
-                action[0:3] = np.clip(delta * gain, -1.0, 1.0)
-                action[3] = 1.0  # close gripper to prepare for push
-            else:
-                # Push: move in the direction from puck to goal (THROUGH the puck).
-                if norm < 1e-6:
-                    # Goal reached; stop moving.
-                    action = np.zeros(4, dtype=np.float32)
-                else:
-                    # If the gripper lost contact (overshot past the puck), re-approach
-                    # the behind-point before pushing again; otherwise push through.
-                    if dist_grip_puck > 0.10:
-                        target = behind
-                        delta = target - gripper_pos
-                        action = np.zeros(4, dtype=np.float32)
-                        action[0:3] = np.clip(delta * 3.0, -1.0, 1.0)
-                        action[3] = 1.0
-                    else:
-                        push_speed = rng.uniform(*push_speed_range)
-                        action = np.zeros(4, dtype=np.float32)
-                        action[0:3] = np.clip((dir_to_goal / norm) * push_speed, -1.0, 1.0)
-                        action[3] = 1.0  # keep gripper closed
-
-            next_obs, _, terminated, truncated, _ = env.step(action)
-            done = bool(terminated or truncated or step + 1 >= horizon)
-
-            trajectory.append(
-                {
-                    "state": obs["observation"].copy(),
-                    "achieved_goal": obs["achieved_goal"].copy(),
-                    "goal": obs["desired_goal"].copy(),
-                    "action": action.copy(),
-                    "next_state": next_obs["observation"].copy(),
-                    "next_achieved_goal": next_obs["achieved_goal"].copy(),
-                    "gripper": gripper_pos.copy(),
-                    "next_gripper": next_obs["observation"][0:3].copy(),
-                    "done": done,
-                }
-            )
-            obs = next_obs
-            if done:
-                break
-
+        trajectory = _scripted_rollout(config, env, rng, seed)
         replay.add(trajectory)
         # Update normalizers with the scripted data to improve initial statistics.
         obs_normalizer.update(np.asarray([row["state"] for row in trajectory]))
         goal_normalizer.update(np.asarray([row["goal"] for row in trajectory]))
-
     print(f"Seeded replay with {num_rollouts} scripted rollouts ({len(replay)} transitions)", flush=True)
 
 
@@ -643,6 +653,15 @@ def train_and_evaluate(
                 critic_optimizer.step()
             _soft_update_targets(config, actor, critic, target_actor, target_critic)
         for episode in range(config.train_episodes):
+            # Interleave a scripted reach-then-push rollout every `scripted_every`
+            # episodes so the replay continuously gets contact-push examples (the
+            # actor's own exploration rarely contacts the puck).
+            if config.scripted_every > 0 and episode % config.scripted_every == 0:
+                scripted_traj = _scripted_rollout(config, env, rng, config.seed + 20_000 + episode)
+                replay.add(scripted_traj)
+                if update_normalizers:
+                    obs_normalizer.update(np.asarray([row["state"] for row in scripted_traj]))
+                    goal_normalizer.update(np.asarray([row["goal"] for row in scripted_traj]))
             observation, _ = env.reset(seed=config.seed + episode)
             trajectory: list[dict[str, Any]] = []
             # Contact telemetry: did the gripper get within contact distance of the
