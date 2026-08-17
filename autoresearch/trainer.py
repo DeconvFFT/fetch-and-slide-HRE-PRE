@@ -203,13 +203,13 @@ def _make_reward_fn(config: CandidateConfig, env) -> Any:
     skill = getattr(config, "skill", "slide")
 
     def reward_fn(achieved_goal, goal, info, gripper_now=None, gripper_next=None, puck_now=None, puck_next=None):
-        # Reach shaping is ONLY active in dense mode. In sparse mode the reward is
-        # pure env.compute_reward (matching the reference that hit 80% success) so the
-        # target Q clamp to [-1/(1-gamma), 0] is valid — reach shaping makes Q positive
-        # and destabilizes the critic under the sparse Q bound. HER + the longer
-        # training regime teach reach without an explicit shaping term.
+        # Reach shaping is ALWAYS active (in both dense and sparse mode): it is the
+        # mechanism that teaches the actor to contact the puck. Without it the actor
+        # never contacts the puck (contact rate collapses to ~0) and the puck never
+        # moves. The critic is stabilized against the positive Q this introduces by
+        # the Huber loss + lower-bound-only Q clamp (see _update_networks).
         reach = 0.0
-        if config.dense_reward and gripper_now is not None and gripper_next is not None and puck_now is not None:
+        if gripper_now is not None and gripper_next is not None and puck_now is not None:
             puck_pos = np.asarray(puck_now[0:3], dtype=np.float32)
             gnow = np.asarray(gripper_now, dtype=np.float32)
             gnext = np.asarray(gripper_next, dtype=np.float32)
@@ -296,16 +296,12 @@ def _update_networks(
         target_q1, target_q2 = target_critic(next_state_t, next_action)
         target_q = torch.min(target_q1, target_q2)
         target_q = reward_t + config.gamma * (1.0 - done_t) * target_q
-        # Hard-clamp target Q before the critic MSE loss (pre-flight check). For the
-        # sparse reward Q* is bounded to [-1/(1-gamma), 0] (gamma=0.98 -> [-50, 0]);
-        # clamping prevents critic divergence. With a dense reward Q* can be positive
-        # (reach/push/goal shaping), so max=0 would flatten the actor gradient — keep
-        # only the lower divergence guard in that case.
+        # Reach shaping is always active, so Q can be positive (reach/contact rewards).
+        # Clamping max=0 would flatten the actor gradient for reach/contact. Keep only
+        # the lower divergence guard ([-1/(1-gamma), inf)) to prevent critic blow-up;
+        # the Huber loss bounds outlier TD errors from relabeled transitions.
         target_limit = 1.0 / max(1e-6, 1.0 - config.gamma)
-        if config.dense_reward:
-            target_q = torch.clamp(target_q, min=-target_limit)
-        else:
-            target_q = torch.clamp(target_q, min=-target_limit, max=0.0)
+        target_q = torch.clamp(target_q, min=-target_limit)
     current_q1, current_q2 = critic(state_t, action_t)
     # Huber (smooth L1) critic loss: MSE squares large TD errors, making the critic
     # hypersensitive to sparse-reward relabeling spikes (outlier TD errors from
@@ -498,10 +494,7 @@ def train_and_evaluate(
                     target_q = torch.min(tq1, tq2)
                     target_q = reward_t + config.gamma * (1.0 - done_t) * target_q
                     target_limit = 1.0 / max(1e-6, 1.0 - config.gamma)
-                    if config.dense_reward:
-                        target_q = torch.clamp(target_q, min=-target_limit)
-                    else:
-                        target_q = torch.clamp(target_q, min=-target_limit, max=0.0)
+                    target_q = torch.clamp(target_q, min=-target_limit)
                 cq1, cq2 = critic(state_t, action_t)
                 critic_loss = nn.functional.smooth_l1_loss(cq1, target_q) + nn.functional.smooth_l1_loss(cq2, target_q)
                 critic_optimizer.zero_grad(set_to_none=True)
