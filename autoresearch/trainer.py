@@ -203,7 +203,7 @@ def _make_reward_fn(config: CandidateConfig, env, distance_threshold: float = 0.
     Approaching the puck directly from the goal side lets the gripper slide past
     without pushing; approaching the behind-puck point is the only geometry that
     produces a goal-directed push.
-    '''
+    """
     sparse = env.compute_reward if config.skill in ('rotate', 'spin') else env.unwrapped.compute_reward
     skill = getattr(config, 'skill', 'slide')
 
