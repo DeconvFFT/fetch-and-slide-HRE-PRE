@@ -36,6 +36,7 @@ class CandidateConfig:
     policy_noise: float = 0.2
     noise_clip: float = 0.5
     actor_delay: int = 2
+    algorithm: str = "td3"
     rehearse_critic: bool = True
     dense_reward: bool = True
     reach_coef: float = 2.0
@@ -98,6 +99,7 @@ SEARCHABLE_FIELDS = (
     "policy_noise",
     "noise_clip",
     "actor_delay",
+    "algorithm",
     "warmup_steps",
     "train_episodes",
     "horizon",
@@ -239,6 +241,10 @@ def _validate_value(name: str, value: Any) -> Any:
     if name == "device":
         if value not in {"cpu", "cuda", "mps", "auto"}:
             raise ValueError("device must be cpu, cuda, mps, or auto")
+        return value
+    if name == "algorithm":
+        if value not in {"td3", "ddpg"}:
+            raise ValueError("algorithm must be td3 or ddpg")
         return value
     if name == "skill":
         if value not in VALID_SKILLS:

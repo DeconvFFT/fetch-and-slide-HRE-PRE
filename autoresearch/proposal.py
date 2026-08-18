@@ -36,6 +36,9 @@ class Proposal(BaseModel):
     push_coef: Optional[float] = Field(default=None, ge=0.0)
     goal_bonus: Optional[float] = Field(default=None, ge=0.0)
     goal_bonus_radius: Optional[float] = Field(default=None, gt=0.0)
+    rollouts_per_cycle: Optional[int] = Field(default=None, ge=0, le=100)
+    optimsteps: Optional[int] = Field(default=None, ge=1, le=1000)
+    algorithm: Optional[str] = Field(default=None, pattern="^(td3|ddpg)$")
     success_bonus: Optional[float] = Field(default=None, ge=0.0)
     scripted_rollouts: Optional[int] = Field(default=None, ge=0, le=100000)
     scripted_every: Optional[int] = Field(default=None, ge=0, le=100000)
@@ -457,7 +460,7 @@ def propose_overrides(
     if not api_key and not ("luna" in model or "codex" in model):
         raise RuntimeError("BASETEN_API_KEY (or OPENROUTER_API_KEY) is required for --proposal")
     endpoint = _endpoint()
-    numeric_fields = ("actor_lr", "critic_lr", "gamma", "tau", "her_ratio", "noise_std", "per_alpha", "per_epsilon", "her_future", "batch_size", "updates_per_step", "train_episodes", "reach_coef", "reach_contact_bonus", "push_coef", "goal_bonus", "goal_bonus_radius", "success_bonus", "scripted_rollouts", "scripted_every")
+    numeric_fields = ("actor_lr", "critic_lr", "gamma", "tau", "her_ratio", "noise_std", "per_alpha", "per_epsilon", "her_future", "batch_size", "updates_per_step", "train_episodes", "reach_coef", "reach_contact_bonus", "push_coef", "goal_bonus", "goal_bonus_radius", "success_bonus", "scripted_rollouts", "scripted_every", "rollouts_per_cycle", "optimsteps")
     schema = {
         "type": "object",
         "properties": {
@@ -465,6 +468,7 @@ def propose_overrides(
             "skill": {"type": "string", "enum": ["slide", "rotate", "spin", "pick", "fetch"]},
             "dense_reward": {"type": "boolean"},
             "score_config": {"type": "string"},
+            "algorithm": {"type": "string", "enum": ["td3", "ddpg"]},
             "code_edit": {
                 "type": "object",
                 "properties": {
@@ -525,9 +529,10 @@ def propose_overrides(
         "Return a JSON object. You may return hyperparameter overrides, OR a code_edit "
         "{\"code_edit\": {\"file\": \"trainer.py\", \"function\": \"<name>\", \"new_code\": \"<full replacement source>\"}} "
         "if a structural code change is the right move. "
-        "Valid numeric fields: actor_lr, critic_lr, gamma, tau, her_ratio, noise_std, per_alpha, per_epsilon, "
+        "Valid fields: actor_lr, actor_l2, critic_lr, gamma, tau, her_ratio, noise_std, per_alpha, per_epsilon, "
         "her_future, batch_size, updates_per_step, train_episodes, reach_coef, reach_contact_bonus, "
-        "push_coef, goal_bonus, goal_bonus_radius, success_bonus, scripted_rollouts, scripted_every. "
+        "push_coef, goal_bonus, goal_bonus_radius, success_bonus, scripted_rollouts, scripted_every, "
+        "rollouts_per_cycle, optimsteps, algorithm (td3 or ddpg). "
         "You may also propose skill (slide, rotate, spin, pick, fetch), dense_reward (boolean), and "
         "score_config (JSON string like {\"success_weight\":10,\"distance_weight\":1,\"yaw_weight\":1,\"rate_weight\":1}). "
         "FetchSlide is a hard two-stage task (reach the puck, then push it toward the goal). "

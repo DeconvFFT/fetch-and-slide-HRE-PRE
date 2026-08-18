@@ -47,6 +47,7 @@ class EpisodeReplay:
         her_future: int = 4,
         distance_threshold: float = 0.05,
         skill: str = "slide",
+        reference_her: bool = False,
     ) -> dict[str, np.ndarray]:
         if not self.episodes:
             raise RuntimeError("cannot sample an empty replay buffer")
@@ -58,6 +59,32 @@ class EpisodeReplay:
             selected = rng.choice(len(candidates), size=batch_size, replace=True, p=probabilities)
         else:
             selected = rng.integers(0, len(candidates), size=batch_size)
+        if reference_her:
+            # Original HER implementation samples exactly batch_size transitions
+            # and relabels each selected row at most once with one future goal.
+            # It does not expand a row into 1+k transitions.
+            out_rows = []
+            if self.prioritized and self.beta > 0.0:
+                max_weight = float(np.max(weights))
+                n = float(len(candidates))
+                candidate_weights = np.power(n * probabilities[selected], -self.beta) / max_weight
+            row_weights = []
+            for row_index, selected_index in enumerate(selected):
+                episode_index, index = candidates[int(selected_index)]
+                episode = self.episodes[episode_index]
+                transition = episode[index]
+                if rng.random() < her_ratio and index + 1 < len(episode):
+                    future_index = int(rng.integers(index + 1, len(episode)))
+                    goal = np.asarray(episode[future_index]["next_achieved_goal"], dtype=np.float32).copy()
+                else:
+                    goal = np.asarray(transition["goal"], dtype=np.float32).copy()
+                out_rows.append(self._row(episode_index, index, transition, goal, reward_fn, distance_threshold, skill))
+                if self.prioritized and self.beta > 0.0:
+                    row_weights.append(float(candidate_weights[row_index]))
+            result = {key: np.asarray([row[key] for row in out_rows], dtype=np.float32) for key in out_rows[0]}
+            if self.prioritized and self.beta > 0.0:
+                result["weight"] = np.asarray(row_weights, dtype=np.float32)
+            return result
         rows: list[dict[str, Any]] = []
         for selected_index in selected:
             episode_index, index = candidates[int(selected_index)]

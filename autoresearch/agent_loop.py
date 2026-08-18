@@ -36,22 +36,43 @@ REPO_ROOT = PACKAGE_DIR.parent
 # Editable training files (mirrors proposal.CODE_EDITABLE_FILES).
 EDITABLE_FILES = ("trainer.py", "replay.py", "model.py")
 
-# Fixed, bounded training budget so trials are comparable (like karpathy's 5 min).
-# eval_every/log_every are set high so only the final eval runs — keeps wall-clock
-# bounded and trials comparable.
+# Override the bounded trial budget from the Colab environment without changing
+# the local fast defaults. Colab sets these for meaningful CUDA experiments.
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
 BUDGET = {
-    "train_episodes": 30,
+    "algorithm": os.getenv("AUTORESEARCH_ALGORITHM", "td3"),
+    "train_episodes": _env_int("AUTORESEARCH_TRAIN_EPISODES", 30),
     "horizon": 50,
-    "eval_episodes": 3,
-    "batch_size": 64,
-    "warmup_steps": 10,
+    "eval_episodes": _env_int("AUTORESEARCH_EVAL_EPISODES", 3),
+    "batch_size": _env_int("AUTORESEARCH_BATCH_SIZE", 64),
+    "warmup_steps": _env_int("AUTORESEARCH_WARMUP_STEPS", 10),
     "updates_per_step": 1,
     "eval_every": 100_000,
-    "log_every": 100_000,
-    "device": "auto",
+    "log_every": _env_int("AUTORESEARCH_LOG_EVERY", 100_000),
+    "device": os.getenv("AUTORESEARCH_DEVICE", "auto"),
+    "her_future": _env_int("AUTORESEARCH_HER_FUTURE", 8),
+    "her_ratio": 0.8,
+    "per": False,
+    "hper": False,
+    "dense_reward": os.getenv("AUTORESEARCH_DENSE_REWARD", "true").lower() == "true",
+    "actor_l2": 1.0 if os.getenv("AUTORESEARCH_ALGORITHM") == "ddpg" else 0.1,
+    "rollouts_per_cycle": _env_int("AUTORESEARCH_ROLLOUTS_PER_CYCLE", 0),
+    "optimsteps": _env_int("AUTORESEARCH_OPTIMSTEPS", 40),
+    "replay_capacity": _env_int("AUTORESEARCH_REPLAY_CAPACITY", 100_000),
 }
-# Clamp budget-critical fields so the LLM cannot blow up wall-clock time.
-BUDGET_CLAMPS = {"train_episodes": (1, 60), "eval_episodes": (1, 5), "horizon": (1, 50)}
+# Clamp budget-critical fields so the LLM cannot silently blow up wall-clock
+# time; Colab opts into a larger bound explicitly.
+BUDGET_CLAMPS = {
+    "train_episodes": (1, _env_int("AUTORESEARCH_MAX_EPISODES", BUDGET["train_episodes"])),
+    "eval_episodes": (1, max(5, BUDGET["eval_episodes"])),
+    "horizon": (1, 50),
+}
 
 
 # ---------------------------------------------------------------------------

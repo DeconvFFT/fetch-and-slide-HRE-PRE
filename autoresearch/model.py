@@ -54,3 +54,21 @@ class Critic(nn.Module):
     def q1_only(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         value = torch.cat([state, action], dim=-1)
         return self.q1(value)
+
+class DDPGCritic(nn.Module):
+    """Reference single-Q critic used by the original HER+DDPG recipe."""
+
+    def __init__(self, input_dim: int = 32, hidden_dim: int = 256) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        return self.net(torch.cat([state, action], dim=-1))

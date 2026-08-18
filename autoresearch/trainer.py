@@ -13,7 +13,7 @@ from torch import nn
 
 from .config import CandidateConfig
 from .metrics import EvaluationMetrics, score_metrics
-from .model import Actor, Critic
+from .model import Actor, Critic, DDPGCritic
 from .replay import EpisodeReplay
 from .skills import skill_dims
 
@@ -92,7 +92,7 @@ def _make_env(config: CandidateConfig):
     return env
 
 
-def _load_actor_checkpoint(path: Path, hidden_dim: int, device: torch.device) -> tuple[Actor, RunningNormalizer, RunningNormalizer, Critic | None, Actor | None, Critic | None]:
+def _load_actor_checkpoint(path: Path, hidden_dim: int, device: torch.device, algorithm: str = "td3") -> tuple[Actor, RunningNormalizer, RunningNormalizer, Any, Actor | None, Any]:
     payload = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(payload, (list, tuple)) and len(payload) == 5:
         obs_mean, obs_std, goal_mean, goal_std, state_dict = payload
@@ -108,6 +108,7 @@ def _load_actor_checkpoint(path: Path, hidden_dim: int, device: torch.device) ->
         raise ValueError(f"Unsupported actor checkpoint format: {path}")
     obs_dim = int(np.asarray(obs_mean).size)
     goal_dim = int(np.asarray(goal_mean).size)
+    critic_cls = DDPGCritic if algorithm == "ddpg" else Critic
     actor = Actor(hidden_dim=hidden_dim, input_dim=obs_dim + goal_dim).to(device)
     actor.load_state_dict(state_dict)
     actor.eval()
@@ -115,13 +116,13 @@ def _load_actor_checkpoint(path: Path, hidden_dim: int, device: torch.device) ->
     target_actor = None
     target_critic = None
     if critic_state is not None:
-        critic = Critic(hidden_dim=hidden_dim, input_dim=obs_dim + goal_dim + 4).to(device)
+        critic = critic_cls(hidden_dim=hidden_dim, input_dim=obs_dim + goal_dim + 4).to(device)
         critic.load_state_dict(critic_state)
         critic.eval()
         target_actor = Actor(hidden_dim=hidden_dim, input_dim=obs_dim + goal_dim).to(device)
         target_actor.load_state_dict(payload.get("target_actor_state", state_dict))
         target_actor.eval()
-        target_critic = Critic(hidden_dim=hidden_dim, input_dim=obs_dim + goal_dim + 4).to(device)
+        target_critic = critic_cls(hidden_dim=hidden_dim, input_dim=obs_dim + goal_dim + 4).to(device)
         target_critic.load_state_dict(payload.get("target_critic_state", critic_state))
         target_critic.eval()
     return actor, RunningNormalizer.from_arrays(obs_mean, obs_std), RunningNormalizer.from_arrays(goal_mean, goal_std), critic, target_actor, target_critic
@@ -283,9 +284,9 @@ def _make_reward_fn(config: CandidateConfig, env, distance_threshold: float = 0.
 def _update_networks(
     config: CandidateConfig,
     actor: Actor,
-    critic: Critic,
+    critic: Any,
     target_actor: Actor,
-    target_critic: Critic,
+    target_critic: Any,
     actor_optimizer: torch.optim.Optimizer,
     critic_optimizer: torch.optim.Optimizer,
     obs_normalizer: RunningNormalizer,
@@ -297,11 +298,10 @@ def _update_networks(
     distance_threshold: float = 0.05,
     actor_step: int = 0,
 ) -> tuple[float, float]:
-    batch = replay.sample(config.batch_size, config.her_ratio, rng, reward_fn, config.her_future, distance_threshold, getattr(config, "skill", "slide"))
+    batch = replay.sample(config.batch_size, config.her_ratio, rng, reward_fn, config.her_future, distance_threshold, getattr(config, "skill", "slide"), reference_her=config.algorithm == "ddpg")
     state = np.concatenate([obs_normalizer.normalize(batch["state"]), goal_normalizer.normalize(batch["goal"])], axis=1)
     next_state = np.concatenate(
-        [obs_normalizer.normalize(batch["next_state"]), goal_normalizer.normalize(batch["goal"])],
-        axis=1,
+        [obs_normalizer.normalize(batch["next_state"]), goal_normalizer.normalize(batch["goal"])], axis=1,
     )
     state_t = torch.from_numpy(state).to(device)
     next_state_t = torch.from_numpy(next_state).to(device)
@@ -309,10 +309,40 @@ def _update_networks(
     reward_t = torch.from_numpy(batch["reward"]).to(device).unsqueeze(1)
     done_t = torch.from_numpy(batch["done"]).to(device).unsqueeze(1)
 
+    if config.algorithm == "ddpg":
+        # Exact reference HER+DDPG target: no target-policy noise, no twin-Q min,
+        # bootstrap even on the final sampled transition, and hard clamp to the
+        # sparse-return bound [-1/(1-gamma), 0].
+        with torch.no_grad():
+            next_action = target_actor(next_state_t)
+            target_q = target_critic(next_state_t, next_action)
+            target_q = reward_t + config.gamma * target_q
+            target_limit = 1.0 / max(1e-6, 1.0 - config.gamma)
+            target_q = torch.clamp(target_q, min=-target_limit, max=0.0)
+        current_q = critic(state_t, action_t)
+        if "weight" in batch:
+            weight_t = torch.from_numpy(batch["weight"]).to(device).unsqueeze(1)
+            critic_loss = (weight_t * (current_q - target_q).square()).mean()
+        else:
+            critic_loss = nn.functional.mse_loss(current_q, target_q)
+        critic_optimizer.zero_grad(set_to_none=True)
+        critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(critic.parameters(), 10.0)
+        critic_optimizer.step()
+        if config.per:
+            priority = (target_q - current_q).detach().abs().squeeze(1).cpu().numpy()
+            replay.update_priorities(batch["episode_index"], batch["transition_index"], priority)
+        actor_output = actor(state_t)
+        actor_loss = -critic(state_t, actor_output).mean() + config.actor_l2 * actor_output.square().mean()
+        actor_optimizer.zero_grad(set_to_none=True)
+        actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(actor.parameters(), 10.0)
+        actor_optimizer.step()
+        return float(actor_loss.detach().cpu().item()), float(critic_loss.detach().cpu().item())
+
+    # TD3 path: target policy smoothing, clipped double-Q target, Huber critic,
+    # and delayed actor update.
     with torch.no_grad():
-        # TD3 target policy smoothing: add clipped noise to the target action so the
-        # critic doesn't overestimate on sharp Q peaks, then take the MIN of the two
-        # target critics (clipped double Q-learning) to curb overestimation.
         next_action = target_actor(next_state_t)
         noise = torch.randn_like(next_action) * config.policy_noise
         noise = torch.clamp(noise, -config.noise_clip, config.noise_clip)
@@ -320,21 +350,12 @@ def _update_networks(
         target_q1, target_q2 = target_critic(next_state_t, next_action)
         target_q = torch.min(target_q1, target_q2)
         target_q = reward_t + config.gamma * (1.0 - done_t) * target_q
-        # Reach shaping is always active, so Q can be positive (reach/contact rewards).
-        # Clamping max=0 would flatten the actor gradient for reach/contact. Keep only
-        # the lower divergence guard ([-1/(1-gamma), inf)) to prevent critic blow-up;
-        # the Huber loss bounds outlier TD errors from relabeled transitions.
         target_limit = 1.0 / max(1e-6, 1.0 - config.gamma)
         target_q = torch.clamp(target_q, min=-target_limit)
     current_q1, current_q2 = critic(state_t, action_t)
-    # Huber (smooth L1) critic loss: MSE squares large TD errors, making the critic
-    # hypersensitive to sparse-reward relabeling spikes (outlier TD errors from
-    # table-edge collisions dominate the gradient and blow up critic weights).
-    # smooth_l1 bounds outlier gradients and stabilizes the critic.
-    if 'weight' in batch:
-        # Importance-sampling weight corrects the priority bias (Schaul 2015).
-        weight_t = torch.from_numpy(batch['weight']).to(device).unsqueeze(1)
-        critic_loss = (weight_t * nn.functional.smooth_l1_loss(current_q1, target_q, reduction='none')).mean() + (weight_t * nn.functional.smooth_l1_loss(current_q2, target_q, reduction='none')).mean()
+    if "weight" in batch:
+        weight_t = torch.from_numpy(batch["weight"]).to(device).unsqueeze(1)
+        critic_loss = (weight_t * nn.functional.smooth_l1_loss(current_q1, target_q, reduction="none")).mean() + (weight_t * nn.functional.smooth_l1_loss(current_q2, target_q, reduction="none")).mean()
     else:
         critic_loss = nn.functional.smooth_l1_loss(current_q1, target_q) + nn.functional.smooth_l1_loss(current_q2, target_q)
     critic_optimizer.zero_grad(set_to_none=True)
@@ -343,10 +364,6 @@ def _update_networks(
     critic_optimizer.step()
     if config.per:
         td_error = (target_q - current_q1).detach().abs().squeeze(1).cpu().numpy()
-        # H-PER: relabeled rows carry ~zero TD error (hindsight goals are near-achieved),
-        # so PER starves them. Prioritize by achieved-goal progress toward the hindsight
-        # goal instead; original-goal rows keep TD priority. Use the explicit relabeled
-        # flag (not reward==0, which is wrong under dense reward).
         goals = torch.from_numpy(batch["goal"])
         dist_now = torch.linalg.norm(torch.from_numpy(batch["achieved_goal"]) - goals, dim=1).numpy()
         dist_next = torch.linalg.norm(torch.from_numpy(batch["next_achieved_goal"]) - goals, dim=1).numpy()
@@ -355,9 +372,6 @@ def _update_networks(
         if config.hper:
             priority[relabeled] = np.maximum(priority[relabeled], dist_now[relabeled] - dist_next[relabeled])
         replay.update_priorities(batch["episode_index"], batch["transition_index"], priority)
-
-    # Delayed actor update (TD3): update the actor every `actor_delay` critic steps so
-    # the critic is accurate before the policy is pushed along its gradient.
     actor_loss = 0.0
     if actor_step % config.actor_delay == 0:
         actor_output = actor(state_t)
@@ -368,7 +382,7 @@ def _update_networks(
         actor_optimizer.step()
     if isinstance(actor_loss, torch.Tensor):
         actor_loss = float(actor_loss.detach().cpu().item())
-    return float(actor_loss), float(critic_loss.item())
+    return float(actor_loss), float(critic_loss.detach().cpu().item())
 
 
 def _soft_update_targets(
@@ -539,7 +553,7 @@ def train_and_evaluate(
     incumbent_obs_stats: tuple[np.ndarray, np.ndarray] | None = None
     incumbent_goal_stats: tuple[np.ndarray, np.ndarray] | None = None
     if init_checkpoint is not None:
-        actor, obs_normalizer, goal_normalizer, loaded_critic, loaded_target_actor, loaded_target_critic = _load_actor_checkpoint(init_checkpoint, config.hidden_dim, device)
+        actor, obs_normalizer, goal_normalizer, loaded_critic, loaded_target_actor, loaded_target_critic = _load_actor_checkpoint(init_checkpoint, config.hidden_dim, device, config.algorithm)
         incumbent_metrics = evaluate_actor(config, actor, obs_normalizer, goal_normalizer)
         incumbent_actor_state = {name: value.detach().cpu().clone() for name, value in actor.state_dict().items()}
         if loaded_critic is not None:
@@ -556,9 +570,10 @@ def train_and_evaluate(
         loaded_critic = None
         loaded_target_actor = None
         loaded_target_critic = None
-    critic = loaded_critic if loaded_critic is not None else Critic(hidden_dim=config.hidden_dim, input_dim=obs_normalizer.mean.size + goal_normalizer.mean.size + 4).to(device)
+    critic_cls = DDPGCritic if config.algorithm == "ddpg" else Critic
+    critic = loaded_critic if loaded_critic is not None else critic_cls(hidden_dim=config.hidden_dim, input_dim=obs_normalizer.mean.size + goal_normalizer.mean.size + 4).to(device)
     target_actor = loaded_target_actor if loaded_target_actor is not None else Actor(hidden_dim=config.hidden_dim, input_dim=obs_normalizer.mean.size + goal_normalizer.mean.size).to(device)
-    target_critic = loaded_target_critic if loaded_target_critic is not None else Critic(hidden_dim=config.hidden_dim, input_dim=obs_normalizer.mean.size + goal_normalizer.mean.size + 4).to(device)
+    target_critic = loaded_target_critic if loaded_target_critic is not None else critic_cls(hidden_dim=config.hidden_dim, input_dim=obs_normalizer.mean.size + goal_normalizer.mean.size + 4).to(device)
     if loaded_target_actor is None:
         target_actor.load_state_dict(actor.state_dict())
     if loaded_target_critic is None:
@@ -680,10 +695,11 @@ def train_and_evaluate(
             contact_dist = 0.06
             episode_contact = False
             # Anneal random exploration to ~0 over training so the actor's own policy
-            # dominates the collected data (DDPG needs to evaluate/improve its own
-            # policy, not a permanently 30%-random one).
-            anneal_progress = min(1.0, episode / max(1, config.train_episodes))
-            random_prob = config.random_prob * (1.0 - 0.9 * anneal_progress)
+            if config.algorithm == "ddpg":
+                random_prob = config.random_prob
+            else:
+                anneal_progress = min(1.0, episode / max(1, config.train_episodes))
+                random_prob = config.random_prob * (1.0 - 0.9 * anneal_progress)
             for step in range(config.horizon):
                 if global_step < config.warmup_steps or rng.random() < random_prob:
                     action = env.action_space.sample().astype(np.float32)
@@ -887,5 +903,5 @@ def train_and_evaluate(
 
 def evaluate_checkpoint(config: CandidateConfig, checkpoint: Path) -> EvaluationMetrics:
     device = torch.device("cpu")
-    actor, obs_normalizer, goal_normalizer, _, _, _ = _load_actor_checkpoint(checkpoint, config.hidden_dim, device)
+    actor, obs_normalizer, goal_normalizer, _, _, _ = _load_actor_checkpoint(checkpoint, config.hidden_dim, device, config.algorithm)
     return evaluate_actor(config, actor, obs_normalizer, goal_normalizer)
