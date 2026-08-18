@@ -732,7 +732,36 @@ def train_and_evaluate(
             if update_normalizers:
                 obs_normalizer.update(np.asarray([row["state"] for row in trajectory]))
                 goal_normalizer.update(np.asarray([row["goal"] for row in trajectory]))
-            if len(replay) >= config.batch_size:
+            # Reference cadence: when rollouts_per_cycle > 0, collect that many
+            # rollouts then do `optimsteps` batched updates, then soft-update targets
+            # once per cycle (matches the reference HER+DDPG recipe). Otherwise use
+            # the legacy per-step cadence (updates_per_step updates per step).
+            if config.rollouts_per_cycle > 0:
+                cycle_rollouts = (episode % config.rollouts_per_cycle) == (config.rollouts_per_cycle - 1)
+                if cycle_rollouts and len(replay) >= config.batch_size:
+                    for _ in range(config.optimsteps):
+                        actor_loss, critic_loss = _update_networks(
+                            config,
+                            actor,
+                            critic,
+                            target_actor,
+                            target_critic,
+                            actor_optimizer,
+                            critic_optimizer,
+                            obs_normalizer,
+                            goal_normalizer,
+                            replay,
+                            rng,
+                            reward_fn,
+                            device,
+                            distance_threshold,
+                            actor_step=global_step,
+                        )
+                        actor_losses.append(actor_loss)
+                        critic_losses.append(critic_loss)
+                    # Target networks soft-updated once per cycle.
+                    _soft_update_targets(config, actor, critic, target_actor, target_critic)
+            elif len(replay) >= config.batch_size:
                 for _ in range(len(trajectory) * config.updates_per_step):
                     actor_loss, critic_loss = _update_networks(
                         config,
